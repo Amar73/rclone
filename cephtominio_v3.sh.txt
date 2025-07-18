@@ -1,0 +1,133 @@
+Привет! Мне нужно улучшить bash скрипт синхронизации бакетов.
+С сервера на FreeBSD 14.2 есть доступ к хранилищам Ceph S3 и MinIO S3.
+Есть bash скрипт, с помощью которого утилитой rclone происходит синхронизация бакетов 
+из хранилища Ceph S3 в хранилище MinIO S3:
+
+#!/usr/local/bin/bash
+# Настройки
+LOCK_FILE="/tmp/backup_buckets.lock"
+LOG_DIR="/var/log/rclone-backup"
+DATE=$(date +"%Y-%m-%d_%H-%M-%S")
+LOG_FILE="${LOG_DIR}/${DATE}.log"
+MINIO_REMOTE="minio"
+RCLONE_CONFIG="/root/.config/rclone/rclone.conf"
+RCLONE_FLAGS="--progress --check-first --transfers=50 --checkers=100 \
+        --stats=60s --fast-list --retries=5 --update \
+        --s3-upload-concurrency=20 --checksum \
+        --log-file=$LOG_FILE --log-level ERROR"
+
+# Функция для записи логов
+log_message() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
+
+create_bucket_if_not_exists() {
+    local remote="$1"
+    local bucket="$2"
+
+    if ! rclone lsd "$remote:$bucket" --config="$RCLONE_CONFIG" > /dev/null 2>&1; then
+        log_message "Бакет $bucket не существует. Создание бакета..."
+        rclone mkdir "$remote:$bucket" --config="$RCLONE_CONFIG"
+
+        if [ $? -eq 0 ]; then
+            log_message "Бакет $bucket успешно создан."
+        else
+            log_message "Не удалось создать бакет $bucket."
+            exit 1
+        fi
+    else
+        log_message "Бакет $bucket уже существует."
+    fi
+}
+
+# Список бакетов для бэкапа
+buckets=(
+    "test:db-ncbi-genbank"
+    "test:db-ncbi-pubmed"
+    "test:db-ncbi-refseq"
+    "test:db-ncbi-bioproject"
+    "test:db-ncbi-biosample"
+    "test:db-ncbi-pub"
+    "test:db-ncbi-sra"
+    "test:db-ncbi-snp"
+    "test:db-ncbi-genomes"
+    "test:db-ncbi-blast"
+)
+
+# Начало бэкапа
+log_message "Начало процесса бэкапа."
+
+# Проверяем и создаем целевой бакет в MinIO
+create_bucket_if_not_exists "$MINIO_REMOTE" "db-ncbi"
+
+for bucket in "${buckets[@]}"; do
+    source_remote="${bucket%%:*}"
+    source_bucket="${bucket#*:}"
+    target_path="${MINIO_REMOTE}:db-ncbi/${source_bucket}"
+
+    log_message "Синхронизация бакета: $bucket -> $target_path"
+    rclone copy "$bucket" "$target_path" \
+        --config="$RCLONE_CONFIG" \
+        $RCLONE_FLAGS
+
+    if [ $? -eq 0 ]; then
+        log_message "Успешно завершена синхронизация бакета: $bucket"
+    else
+        log_message "Ошибка при синхронизации бакета: $bucket"
+    fi
+done
+
+exit 0
+
+Есть настроенный /root/.config/rclone/rclone.conf:
+
+[nbgi-init-gd]
+type = s3
+provider = Ceph
+access_key_id = BY36FXW4L15MQX4W14NY
+secret_access_key = jMIpBSibSKUrOWH8CjY0B1y4m6N2KA9Gfr5xpBjH
+endpoint = http://172.30.10.15:8080
+
+[nbgi-init-sequencing]
+type = s3
+provider = Ceph
+access_key_id = 139Z2HIJPVVO0OH4QSJH
+secret_access_key = hmR3J0dDrqVwdcUMYWIKvxDj4NqeRZ3bVfvwmMSC
+endpoint = http://172.30.10.15:8080
+
+[registry]
+type = s3
+provider = Ceph
+access_key_id = X26SJT71S7TNDO7LEDBZ
+secret_access_key = KxsBJHNNqrXvgOvlcCRlDcU0U687URPDZNOSOblr
+endpoint = http://172.30.10.15:8080
+
+[test]
+type = s3
+provider = Ceph
+access_key_id = 0OWZWUK20DLSN01C692A
+secret_access_key = CyF3aUWuFaCjKoHo8y3ebtdFFVysLRzTApBQKJD0
+endpoint = http://172.30.10.15:8080
+
+[backup]
+type = s3
+provider = Ceph
+access_key_id = FZJGI05CYKE6YLB17IGH
+secret_access_key = YDM2KD9lP5RMjpzZvNtF57xtsPDBtZRM3oU57eHP
+endpoint = http://172.30.10.15:8080
+
+[default]
+type = s3
+provider = Ceph
+access_key_id = 4GFMC3G1HT03JOBF5HWS
+secret_access_key = U11b7Yqg42LiWWHB3aUSZhnLqxet8TljQAGCb5jn
+endpoint = http://172.30.10.14:8080
+
+[minio]
+type = s3
+provider = Minio
+access_key_id = minioadmin
+secret_access_key = q2w3e4!!
+endpoint = https://minio01.apps.maket.nbgi.ru:9000
+
+Для улучшения скрипта возможно стоит использовать какие то блоки из bash скрипта, созданного тобой ранее... rclone_04.sh

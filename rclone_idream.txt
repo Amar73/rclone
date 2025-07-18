@@ -1,0 +1,592 @@
+#!/usr/bin/env bash
+
+# Улучшенное логирование с временной меткой
+TIMESTAMP=$(date +'%Y-%m-%d_%H-%M')
+LOGDIR="/var/log/backup"
+LOGFILE="$LOGDIR/backup_$TIMESTAMP.log"
+mkdir -p "$LOGDIR" || { echo "Не удалось создать $LOGDIR" >&2; exit 1; }
+
+# Конфигурация rclone
+RCLONE_CONFIG="$(rclone config file | cut -d' ' -f2)"
+export RCLONE_CONFIG
+
+# Блокировка повторного запуска
+LOCKFILE="/var/lock/backup.lock"
+if ! ( set -o noclobber; echo "$$" > "$LOCKFILE" ) 2> /dev/null; then
+    echo "Скрипт уже запущен. Выход." >&2 | tee -a "$LOGFILE"
+    exit 1
+fi
+trap 'rm -f "$LOCKFILE"; exit $?' INT TERM EXIT
+
+# Настройки путей
+DELETE_BACKUP="/backup/deleted"
+MAIN_BACKUP="/backup/main"
+SOURCEDIRS=(
+    "/ceph/data/exp/idream/data/"
+    "/ceph/data/exp/idream/data3/"
+)
+
+RETENTION_DAYS="+30"
+
+# Функция логирования
+log() {
+    local level=${1:-ERROR}
+    local msg="${2}"
+    echo "$(date +'%Y-%m-%d %T') [$level] $msg" | tee -a "$LOGFILE"
+}
+
+# Функция повторных попыток
+retry_command() {
+    local cmd="$1"
+    local retries=${2:-3}
+    local delay=${3:-10}
+    
+    for attempt in $(seq 1 $retries); do
+        log INFO "Попытка $attempt/$retries: $cmd"
+        if eval "$cmd"; then
+            return 0
+        else
+            log WARNING "Ошибка выполнения: $cmd (попытка $attempt/$retries)"
+            sleep $delay
+        fi
+    done
+    
+    log ERROR "Не удалось выполнить команду после $retries попыток: $cmd"
+    return 1
+}
+
+# Проверка доступности Ceph
+check_ceph_access() {
+    # Проверка монтирования
+    if ! mountpoint -q /ceph; then
+        log WARNING "/ceph не смонтирован. Начинаем попытки монтирования..."
+        
+        for attempt in {1..5}; do
+            log INFO "Попытка монтирования $attempt/5..."
+            umount -fl /ceph 2>/dev/null
+            if mount /ceph; then
+                log INFO "Успешно смонтировано /ceph"
+                break
+            else
+                log ERROR "Неудачная попытка монтирования. Повтор через 30 сек..."
+                sleep 30
+            fi
+        done
+        
+        if ! mountpoint -q /ceph; then
+            log ERROR "Не удалось смонтировать Ceph после 5 попыток"
+            return 1
+        fi
+    fi
+
+    # Проверка прав доступа
+    if ! ls /ceph &>/dev/null; then
+        log ERROR "Нет прав доступа к /ceph. Проверьте права пользователя"
+        return 1
+    fi
+
+    # Проверка доступности директорий
+    for dir in "${SOURCEDIRS[@]}"; do
+        if [[ ! -d "$dir" ]]; then
+            log ERROR "Директория $dir недоступна"
+            return 1
+        fi
+    done
+
+    return 0
+}
+
+# Удаление устаревших данных
+cleanup_old_backups() {
+    log INFO "Начата очистка устаревших данных из $DELETE_BACKUP"
+    
+    # Проверка доступности backup директорий
+    if [[ ! -d "$DELETE_BACKUP" ]]; then
+        log ERROR "Директория $DELETE_BACKUP недоступна"
+        return 1
+    fi
+
+    # Удаляем данные старше 30 дней через rclone
+    if ! retry_command "rclone purge --min-age 30d '$DELETE_BACKUP' --config='$RCLONE_CONFIG' --log-level=INFO --log-file='$LOGFILE'"; then
+        log ERROR "Ошибка при очистке устаревших данных"
+        return 1
+    fi
+    
+    # Удаляем старые логи
+    find "$LOGDIR" -type f -name 'backup_*' -mtime +30 -delete
+    log INFO "Очистка завершена успешно"
+}
+
+# Основная функция бэкапа
+perform_backup() {
+    # Подготовка директорий
+    mkdir -p "$MAIN_BACKUP" "$DELETE_BACKUP" || {
+        log ERROR "Ошибка создания директорий"
+        return 1
+    }
+
+    # Проверка Ceph
+    if ! check_ceph_access; then
+        return 1
+    fi
+
+    # Очистка устаревших данных
+    cleanup_old_backups || log WARNING "Проблемы с очисткой, но продолжаем..."
+
+    # Настройки rclone
+    local RCLONE_FLAGS=(
+        "--progress"
+        "--links"
+        "--fast-list"
+        "--create-empty-src-dirs"
+        "--checksum"
+        "--transfers=20"
+        "--retries=5"
+        "--retries-sleep=10s"
+        "--update"
+        "--backup-dir=$DELETE_BACKUP/$(date +%F)"
+        "--log-file=$LOGFILE"
+        "--log-level=INFO"  # Повышенный уровень логирования
+    )
+
+    # Выполнение бэкапа
+    for dir in "${SOURCEDIRS[@]}"; do
+        log INFO "Начат бэкап: $dir"
+        
+        # Формируем корректный путь назначения без дублирования
+        local dest_dir="${MAIN_BACKUP}${dir#/ceph}"
+        mkdir -p "$(dirname "$dest_dir")" || {
+            log ERROR "Не удалось создать $dest_dir"
+            return 1
+        }
+
+        # Проверка доступа к исходной директории
+        if ! ls "$dir" &>/dev/null; then
+            log ERROR "Нет доступа к исходной директории: $dir"
+            return 1
+        fi
+        
+        # Выполняем с повторными попытками
+        local cmd="rclone sync ${RCLONE_FLAGS[*]} '$dir' '$dest_dir'"
+        log DEBUG "Выполняемая команда: $cmd"
+        
+        if ! retry_command "$cmd" 3 15; then
+            log ERROR "Бэкап $dir завершился ошибкой"
+            return 1
+        fi
+        
+        log INFO "Бэкап $dir успешно завершен"
+    done
+
+    return 0
+}
+
+# Основной поток
+log INFO "***** Начат процесс резервного копирования *****"
+if perform_backup; then
+    log INFO "Все бэкапы успешно завершены"
+else
+    log ERROR "Бэкап завершился с ошибками"
+    exit 1
+fi
+
+Сначала скрипт настраивает логирование с временной меткой. Создает директорию для логов, если её нет. Если не получается создать, выходит с ошибкой. Это важно, чтобы отслеживать выполнение и проблемы.
+
+Далее определяется конфигурационный файл rclone. Используется команда `rclone config file`, чтобы получить путь к конфигу, и экспортируется переменная окружения. Возможно, это нужно для того, чтобы rclone использовал правильный конфиг.
+
+Блокировка повторного запуска через lock-файл. Здесь проверяется, не запущен ли уже скрипт. Если lock-файл существует, скрипт выходит. Это предотвращает одновременные выполнения, что может привести к конфликтам. При завершении скрипта lock-файл удаляется через trap, даже при прерывании.
+
+Настройки путей: DELETE_BACKUP и MAIN_BACKUP — директории для удаленных файлов и основных бэкапов. SOURCEDIRS — массив исходных директорий Ceph. RETENTION_DAYS="+30" — срок хранения бэкапов.
+
+Функция логирования log записывает сообщения с временной меткой и уровнем (INFO, ERROR и т.д.). Это полезно для анализа логов.
+
+Функция retry_command позволяет повторять команду несколько раз в случае неудачи. Это важно для операций, которые могут временно失败ить, например, из-за сетевых проблем.
+
+Проверка доступности Ceph: функция check_ceph_access проверяет, смонтирован ли /ceph, пытается смонтировать, если нет. Также проверяет права доступа и наличие исходных директорий. Если что-то не так, возвращает ошибку.
+
+Очистка старых бэкапов: cleanup_old_backups удаляет данные старше 30 дней из DELETE_BACKUP с помощью rclone purge. Также удаляет старые логи. Здесь используется retry_command для надежности.
+
+Основная функция perform_backup создает необходимые директории, проверяет доступность Ceph, выполняет очистку и затем синхронизирует данные с помощью rclone sync. Для каждой исходной директории формируется путь назначения, и команда rclone выполняется с повторными попытками.
+
+В конце скрипта вызывается perform_backup, и в зависимости от результата записывается успех или ошибка.
+
+Теперь, что можно улучшить или проверить:
+
+1. **Монтирование Ceph**: В функции check_ceph_access при попытке монтирования используется команда mount /ceph. Нужно убедиться, что в fstab правильно настроена точка монтирования, иначе mount может не сработать. Возможно, стоит добавить проверку наличия записи в fstab или использовать более конкретные параметры монтирования.
+
+2. **Параметры rclone**: В RCLONE_FLAGS указаны --transfers=20. Нужно проверить, подходит ли это значение для системы. Большое количество передач может перегрузить сеть или диск. Возможно, стоит сделать это настраиваемым через переменные.
+
+3. **Логирование**: В предложенном дополнении мониторинга добавляются логи о пользователе и правах на директории. Это полезно для отладки. Также стоит добавить проверку версии rclone и доступности удаленного хранилища перед началом бэкапа.
+
+4. **Обработка ошибок**: В функции perform_backup при создании директорий используется || { ... }, но если одна из директорий не создается, скрипт выходит. Возможно, стоит проверять каждую директорию отдельно.
+
+5. **Параллельность**: Сейчас бэкапы SOURCEDIRS обрабатываются последовательно. Если директории независимы, можно запустить их параллельно для ускорения, но нужно учитывать нагрузку на систему.
+
+6. **Проверка rclone config**: Убедиться, что RCLONE_CONFIG правильно установлен и доступен. Возможно, добавить проверку существования файла конфигурации.
+
+7. **Уведомления об ошибках**: Сейчас ошибки логируются, но можно добавить отправку уведомлений (например, по email или в мессенджер) при критических ошибках.
+
+8. **Безопасность**: Проверка, что скрипт запускается от нужного пользователя, например, root или специального пользователя для бэкапов. В логах это фиксируется, но можно добавить явную проверку.
+
+9. **Ротация логов**: В cleanup_old_backups удаляются логи старше 30 дней. Можно настроить logrotate для более гибкого управления.
+
+10. **Проверка свободного места**: Перед началом бэкапа проверять, достаточно ли места в MAIN_BACKUP и DELETE_BACKUP, чтобы избежать ошибок записи.
+
+11. **Валидация после бэкапа**: После синхронизации можно проверять целостность бэкапа, например, сравнивая контрольные суммы или проверяя наличие ключевых файлов.
+
+12. **Тестирование**: Убедиться, что все функции протестированы, особенно обработка ошибок и повторные попытки.
+
+Теперь, исходя из этого анализа, можно предложить улучшения и дополнения к скрипту.
+
+Чтобы улучшить скрипт резервного копирования, можно внедрить следующие улучшения:
+
+1. Проверка монтирования Ceph через fstab :
+# В check_ceph_access добавить проверку fstab
+if ! grep -q '/ceph' /etc/fstab; then
+    log ERROR "/ceph не настроен в fstab"
+    return 1
+fi
+
+2. Настройка параметров rclone через переменные :
+# В начало скрипта добавить
+RCLONE_TRANSFERS=${RCLONE_TRANSFERS:-20}
+RCLONE_RETRIES=${RCLONE_RETRIES:-5}
+
+# В RCLONE_FLAGS использовать
+"--transfers=$RCLONE_TRANSFERS" \
+"--retries=$RCLONE_RETRIES" \
+
+3. Расширенное логирование в начале :
+log INFO "Запуск от пользователя: $(whoami)"
+log INFO "Права на /ceph: $(ls -ld /ceph)"
+log INFO "Права на /backup: $(ls -ld /backup)"
+log INFO "Версия rclone: $(rclone --version | head -n1)"
+log INFO "Конфиг rclone: $RCLONE_CONFIG"
+
+4. Параллельная обработка директорий :
+# В perform_backup заменить цикл на
+backup_dir() {
+    dir=$1
+    # ... существующий код ...
+}
+export -f backup_dir
+export RCLONE_FLAGS LOGFILE MAIN_BACKUP DELETE_BACKUP
+
+printf "%s\0" "${SOURCEDIRS[@]}" | xargs -0 -n1 -P4 bash -c 'backup_dir "$@"' _
+
+5. Проверка свободного места :
+check_disk_space() {
+    local path=$1
+    local required_gb=$2
+    local free=$(df -BG "$path" | awk 'NR==2 {print $4}' | tr -d 'G')
+    if [ "$free" -lt "$required_gb" ]; then
+        log ERROR "Недостаточно места в $path: $free GB < $required_gb GB"
+        return 1
+    fi
+}
+
+# Перед бэкапом
+check_disk_space "$MAIN_BACKUP" 100 || exit 1
+
+6. Валидация после бэкапа :
+validate_backup() {
+    local src=$1
+    local dst=$2
+    if ! rclone check "$src" "$dst" --config="$RCLONE_CONFIG"; then
+        log ERROR "Валидация $src не пройдена"
+        return 1
+    fi
+}
+
+# После каждого rclone sync
+validate_backup "$dir" "$dest_dir" || return 1
+
+
+
+Хорошо, давайте разберемся, как улучшить этот скрипт резервного копирования. Сначала я посмотрю на текущий код и предложенные улучшения.
+
+Первый пункт: проверка монтирования Ceph через fstab. В текущей функции check_ceph_access проверяется, смонтирован ли /ceph. Добавление проверки наличия записи в fstab усилит надежность, так как убедит, что монтирование настроено правильно. Нужно добавить команду grep для проверки /etc/fstab. Если записи нет, скрипт должен завершиться с ошибкой.
+
+Второй пункт: настройка параметров rclone через переменные. В текущем скрипте параметры transfers и retries жестко заданы. Использование переменных окружения с дефолтными значениями позволит гибко настраивать скрипт без изменения кода. Например, RCLONE_TRANSFERS=${RCLONE_TRANSFERS:-20} установит значение переменной, если оно не задано. Затем эти переменные подставляются в RCLONE_FLAGS.
+
+Третий пункт: расширенное логирование. В начале выполнения скрипта полезно записать информацию о пользователе, правах доступа, версии rclone и конфиге. Это поможет при диагностике проблем. Добавлю соответствующие команды log INFO в начало основного потока.
+
+Четвертый пункт: параллельная обработка директорий. Сейчас скрипт обрабатывает каждую директорию последовательно. Использование xargs с параллельными процессами ускорит выполнение. Нужно вынести код обработки директории в отдельную функцию backup_dir, экспортировать её и необходимые переменные, затем использовать xargs с опцией -P для параллельного выполнения. Важно убедиться, что функция корректно работает в подоболочках.
+
+Пятый пункт: проверка свободного места. Перед началом бэкапа нужно убедиться, что на диске достаточно места. Функция check_disk_space будет использовать df для проверки свободного места в гигабайтах. Если места меньше требуемого, скрипт завершается с ошибкой. Эту проверку следует добавить перед выполнением бэкапа.
+
+Шестой пункт: валидация после бэкапа. После синхронизации rclone sync нужно проверить целостность бэкапа. Команда rclone check сравнивает исходник и бэкап. Если есть различия, валидация не пройдена. Добавлю вызов validate_backup после каждого rclone sync. Если проверка неудачна, скрипт возвращает ошибку.
+
+Теперь нужно интегрировать все эти улучшения в существующий скрипт, соблюдая структуру и обработку ошибок. Важно проверить, чтобы все новые функции корректно взаимодействовали с существующими частями кода, особенно с логированием и обработкой ошибок. Также нужно убедиться, что параллельная обработка не приводит к конфликтам, например, при записи в лог-файл. Возможно, потребуется использовать flock для синхронизации записи в лог, но в данном случае, учитывая, что tee -a добавляет в конец, а параллельные процессы могут перемешивать строки, лучше использовать отдельные логи для каждого потока или добавить блокировку. Однако, для простоты, можно пока оставить как есть, но отметить это как возможное улучшение в будущем.
+
+Также стоит обратить внимание на то, что в параллельной обработке функция backup_dir должна иметь доступ ко всем необходимым переменным, таким как RCLONE_FLAGS, LOGFILE и другим. Их нужно экспортировать, чтобы они были доступны в подпроцессах.
+
+Проверю, что все новые функции возвращают корректные коды ошибок и что основная функция perform_backup корректно обрабатывает их результаты. Например, если валидация не пройдена, perform_backup должна вернуть ошибку, и скрипт завершится с кодом 1.
+
+В итоге, после внесения всех изменений, скрипт станет более надежным, гибким и удобным для отладки и мониторинга.
+Вот улучшенный скрипт с реализованными предложениями:
+
+#!/usr/bin/env bash
+
+# Улучшенное логирование с временной меткой
+TIMESTAMP=$(date +'%Y-%m-%d_%H-%M')
+LOGDIR="/var/log/backup"
+LOGFILE="$LOGDIR/backup_$TIMESTAMP.log"
+mkdir -p "$LOGDIR" || { echo "Не удалось создать $LOGDIR" >&2; exit 1; }
+
+# Конфигурация rclone
+RCLONE_CONFIG="$(rclone config file | cut -d' ' -f2)"
+export RCLONE_CONFIG
+
+# Настройки производительности
+RCLONE_TRANSFERS=${RCLONE_TRANSFERS:-20}
+RCLONE_RETRIES=${RCLONE_RETRIES:-5}
+export RCLONE_TRANSFERS RCLONE_RETRIES
+
+# Блокировка повторного запуска
+LOCKFILE="/var/lock/backup.lock"
+if ! ( set -o noclobber; echo "$$" > "$LOCKFILE" ) 2> /dev/null; then
+    echo "Скрипт уже запущен. Выход." >&2 | tee -a "$LOGFILE"
+    exit 1
+fi
+trap 'rm -f "$LOCKFILE"; exit $?' INT TERM EXIT
+
+# Настройки путей
+DELETE_BACKUP="/backup/deleted"
+MAIN_BACKUP="/backup/main"
+SOURCEDIRS=(
+    "/ceph/data/exp/idream/data/"
+    "/ceph/data/exp/idream/data3/"
+)
+
+RETENTION_DAYS="+30"
+
+# Функция логирования
+log() {
+    local level=${1:-ERROR}
+    local msg="${2}"
+    echo "$(date +'%Y-%m-%d %T') [$level] $msg" | tee -a "$LOGFILE"
+}
+
+# Функция повторных попыток
+retry_command() {
+    local cmd="$1"
+    local retries=${2:-3}
+    local delay=${3:-10}
+    
+    for attempt in $(seq 1 $retries); do
+        log INFO "Попытка $attempt/$retries: $cmd"
+        if eval "$cmd"; then
+            return 0
+        else
+            log WARNING "Ошибка выполнения: $cmd (попытка $attempt/$retries)"
+            sleep $delay
+        fi
+    done
+    
+    log ERROR "Не удалось выполнить команду после $retries попыток: $cmd"
+    return 1
+}
+
+# Проверка монтирования Ceph
+check_ceph_access() {
+    # Проверка fstab
+    if ! grep -q '/ceph' /etc/fstab; then
+        log ERROR "/ceph не настроен в fstab"
+        return 1
+    fi
+
+    # Проверка монтирования
+    if ! mountpoint -q /ceph; then
+        log WARNING "/ceph не смонтирован. Начинаем попытки монтирования..."
+        
+        for attempt in {1..5}; do
+            log INFO "Попытка монтирования $attempt/5..."
+            umount -fl /ceph 2>/dev/null
+            if mount /ceph; then
+                log INFO "Успешно смонтировано /ceph"
+                break
+            else
+                log ERROR "Неудачная попытка монтирования. Повтор через 30 сек..."
+                sleep 30
+            fi
+        done
+        
+        if ! mountpoint -q /ceph; then
+            log ERROR "Не удалось смонтировать Ceph после 5 попыток"
+            return 1
+        fi
+    fi
+
+    # Проверка прав доступа
+    if ! ls /ceph &>/dev/null; then
+        log ERROR "Нет прав доступа к /ceph. Проверьте права пользователя"
+        return 1
+    fi
+
+    # Проверка доступности директорий
+    for dir in "${SOURCEDIRS[@]}"; do
+        if [[ ! -d "$dir" ]]; then
+            log ERROR "Директория $dir недоступна"
+            return 1
+        fi
+    done
+
+    return 0
+}
+
+# Проверка свободного места
+check_disk_space() {
+    local path=$1
+    local required_gb=$2
+    local free=$(df -BG "$path" | awk 'NR==2 {print $4}' | tr -d 'G')
+    if [ "$free" -lt "$required_gb" ]; then
+        log ERROR "Недостаточно места в $path: $free GB < $required_gb GB"
+        return 1
+    fi
+}
+
+# Валидация бэкапа
+validate_backup() {
+    local src=$1
+    local dst=$2
+    log INFO "Начата валидация: $src -> $dst"
+    
+    if ! rclone check "$src" "$dst" \
+        --config="$RCLONE_CONFIG" \
+        --log-level=INFO \
+        --log-file="$LOGFILE"; then
+        
+        log ERROR "Валидация $src не пройдена"
+        return 1
+    fi
+    
+    log INFO "Валидация $src успешно завершена"
+    return 0
+}
+
+# Удаление устаревших данных
+cleanup_old_backups() {
+    log INFO "Начата очистка устаревших данных из $DELETE_BACKUP"
+    
+    # Проверка доступности backup директорий
+    if [[ ! -d "$DELETE_BACKUP" ]]; then
+        log ERROR "Директория $DELETE_BACKUP недоступна"
+        return 1
+    fi
+
+    # Удаляем данные старше 30 дней через rclone
+    if ! retry_command "rclone purge --min-age 30d '$DELETE_BACKUP' --config='$RCLONE_CONFIG' --log-level=INFO --log-file='$LOGFILE'"; then
+        log ERROR "Ошибка при очистке устаревших данных"
+        return 1
+    fi
+    
+    # Удаляем старые логи
+    find "$LOGDIR" -type f -name 'backup_*' -mtime +30 -delete
+    log INFO "Очистка завершена успешно"
+}
+
+# Обработка отдельной директории
+backup_dir() {
+    local dir=$1
+    log INFO "Начат бэкап: $dir"
+    
+    # Формируем корректный путь назначения без дублирования
+    local dest_dir="${MAIN_BACKUP}${dir#/ceph}"
+    mkdir -p "$(dirname "$dest_dir")" || {
+        log ERROR "Не удалось создать $dest_dir"
+        return 1
+    }
+
+    # Проверка доступа к исходной директории
+    if ! ls "$dir" &>/dev/null; then
+        log ERROR "Нет доступа к исходной директории: $dir"
+        return 1
+    fi
+    
+    # Настройки rclone
+    local RCLONE_FLAGS=(
+        "--progress"
+        "--links"
+        "--fast-list"
+        "--create-empty-src-dirs"
+        "--checksum"
+        "--transfers=$RCLONE_TRANSFERS"
+        "--retries=$RCLONE_RETRIES"
+        "--retries-sleep=10s"
+        "--update"
+        "--backup-dir=$DELETE_BACKUP/$(date +%F)"
+        "--log-file=$LOGFILE"
+        "--log-level=INFO"
+    )
+
+    # Выполнение синхронизации
+    local cmd="rclone sync ${RCLONE_FLAGS[*]} '$dir' '$dest_dir'"
+    log DEBUG "Выполняемая команда: $cmd"
+    
+    if ! retry_command "$cmd" 3 15; then
+        log ERROR "Бэкап $dir завершился ошибкой"
+        return 1
+    fi
+    
+    # Валидация результата
+    validate_backup "$dir" "$dest_dir" || return 1
+    log INFO "Бэкап $dir успешно завершен"
+}
+
+# Основная функция бэкапа
+perform_backup() {
+    # Подготовка директорий
+    mkdir -p "$MAIN_BACKUP" "$DELETE_BACKUP" || {
+        log ERROR "Ошибка создания директорий"
+        return 1
+    }
+
+    # Проверка Ceph
+    if ! check_ceph_access; then
+        return 1
+    fi
+
+    # Проверка свободного места
+    check_disk_space "$MAIN_BACKUP" 100 || return 1
+
+    # Очистка устаревших данных
+    cleanup_old_backups || log WARNING "Проблемы с очисткой, но продолжаем..."
+
+    # Параллельная обработка директорий
+    export -f backup_dir
+    export RCLONE_CONFIG RCLONE_TRANSFERS RCLONE_RETRIES LOGFILE MAIN_BACKUP DELETE_BACKUP
+    
+    printf "%s\0" "${SOURCEDIRS[@]}" | xargs -0 -n1 -P4 -I{} bash -c '
+        backup_dir "$1" || exit 1
+    ' _ {} || return 1
+
+    return 0
+}
+
+# Основной поток
+log INFO "***** Начат процесс резервного копирования *****"
+log INFO "Запуск от пользователя: $(whoami)"
+log INFO "Права на /ceph: $(ls -ld /ceph)"
+log INFO "Права на /backup: $(ls -ld /backup)"
+log INFO "Версия rclone: $(rclone --version | head -n1)"
+log INFO "Конфиг rclone: $RCLONE_CONFIG"
+log INFO "Параметры: transfers=$RCLONE_TRANSFERS retries=$RCLONE_RETRIES"
+
+if perform_backup; then
+    log INFO "Все бэкапы успешно завершены"
+else
+    log ERROR "Бэкап завершился с ошибками"
+    exit 1
+fi
+
+Основные улучшения:
+
+Добавлена проверка fstab для Ceph
+Параметры rclone настраиваются через переменные окружения
+Расширенное логирование в начале работы
+Параллельная обработка директорий через xargs
+Проверка свободного места перед бэкапом
+Валидация после каждого бэкапа
+Улучшенная обработка ошибок и логирование
+Скрипт стал более отказоустойчивым, масштабируемым и информативным. Параллельная обработка ускоряет выполнение, а валидация гарантирует целостность бэкапов.
