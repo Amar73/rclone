@@ -9,11 +9,11 @@
 #  - Валидация (рекурсивная, с теми же фильтрами) — добавлена, но ЗАКОММЕНТИРОВАНА
 #
 # КРИТИЧЕСКИЕ ИЗМЕНЕНИЯ:
-# 1. УДАЛЕНА НЕВЕРНАЯ ОПЦИЯ --local-encoding=UTF-8 (главная ошибка)
-# 2. ИСПРАВЛЕНА ОБРАБОТКА КОДА ВОЗВРАТА В retry_command
-# 3. ИСПРАВЛЕНО ФОРМАТИРОВАНИЕ ДАННЫХ В СВОДКЕ
-# 4. УЛУЧШЕНА ОБРАБОТКА ОШИБОК RCLONE DELETE (ошибка 3 - no files)
-# 5. ДОБАВЛЕНА ПРОВЕРКА НАЛИЧИЯ JQ И РЕЗЕРВНЫЙ МЕТОД ГЕНЕРАЦИИ СВОДКИ
+# 1. ИСПРАВЛЕНО УКАЗАНИЕ ЛОКАЛЬНЫХ ПУТЕЙ ДЛЯ RCLONE (главная ошибка)
+# 2. УЛУЧШЕНА ОБРАБОТКА ОШИБОК ДЛЯ ЛОКАЛЬНЫХ ОПЕРАЦИЙ
+# 3. ДОБАВЛЕНА ПРОВЕРКА СУЩЕСТВОВАНИЯ /backup/deleted
+# 4. ИСПРАВЛЕНО ФОРМАТИРОВАНИЕ ДАННЫХ В СВОДКЕ
+# 5. УДАЛЕНА НЕВЕРНАЯ ОПЦИЯ --local-encoding=UTF-8
 
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -126,7 +126,7 @@ cmd_to_string() {
     printf '%s\n' "${out% }"
 }
 
-# ИСПРАВЛЕНО: КОРРЕКТНАЯ ОБРАБОТКА КОДА ВОЗВРАТА (главная проблема)
+# ИСПРАВЛЕНО: КОРРЕКТНАЯ ОБРАБОТКА КОДА ВОЗВРАТА
 retry_command() {
     local retries="$1"; shift
     local delay="$1";   shift
@@ -215,13 +215,19 @@ check_ceph_access() {
     fi
 }
 
-# Очистка устаревших «удалённых» бэкапов
+# ИСПРАВЛЕНО: ОЧИСТКА УСТАРЕВШИХ «УДАЛЁННЫХ» БЭКАПОВ
 cleanup_old_backups() {
     log INFO "Очистка устаревших данных в $DELETE_BACKUP (старше 30d)"
-    [[ -d "$DELETE_BACKUP" ]] || { log ERROR "Каталог $DELETE_BACKUP отсутствует"; return 1; }
     
-    # ИСПРАВЛЕНО: безопасное добавление --config (проблема с unbound variable)
-    local del_cmd=( rclone delete --min-age 30d --use-json-log --log-file="$RCLONE_JSONLOG" "local:$DELETE_BACKUP" )
+    # ИСПРАВЛЕНО: проверка существования каталога
+    if [[ ! -d "$DELETE_BACKUP" ]]; then
+        log WARNING "Каталог $DELETE_BACKUP не существует. Создаем каталог."
+        mkdir -p "$DELETE_BACKUP" || { log ERROR "Не удалось создать каталог $DELETE_BACKUP"; return 1; }
+    fi
+    
+    # ИСПРАВЛЕНО: УДАЛЕНО УКАЗАНИЕ "local:" ДЛЯ ЛОКАЛЬНЫХ ПУТЕЙ
+    # Для локальной файловой системы в rclone используется просто путь, без префикса "local:"
+    local del_cmd=( rclone delete --min-age 30d --use-json-log --log-file="$RCLONE_JSONLOG" "$DELETE_BACKUP" )
     if [[ -n "${RCLONE_CONFIG:-}" ]]; then
         # Вставляем --config перед последним аргументом
         del_cmd=("${del_cmd[@]::${#del_cmd[@]}-1}" --config="$RCLONE_CONFIG" "${del_cmd[@]: -1}")
@@ -229,8 +235,8 @@ cleanup_old_backups() {
     
     retry_command 3 10 "${del_cmd[@]}" || log WARNING "rclone delete завершился с ошибкой (продолжаем)"
     
-    # ИСПРАВЛЕНО: безопасное добавление --config (проблема с unbound variable)
-    local rd_cmd=( rclone rmdirs --leave-root --use-json-log --log-file="$RCLONE_JSONLOG" "local:$DELETE_BACKUP" )
+    # ИСПРАВЛЕНО: УДАЛЕНО УКАЗАНИЕ "local:" ДЛЯ ЛОКАЛЬНЫХ ПУТЕЙ
+    local rd_cmd=( rclone rmdirs --leave-root --use-json-log --log-file="$RCLONE_JSONLOG" "$DELETE_BACKUP" )
     if [[ -n "${RCLONE_CONFIG:-}" ]]; then
         # Вставляем --config перед последним аргументом
         rd_cmd=("${rd_cmd[@]::${#rd_cmd[@]}-1}" --config="$RCLONE_CONFIG" "${rd_cmd[@]: -1}")
@@ -276,9 +282,6 @@ backup_dir() {
         "--exclude-from=$EXCLUDE_FILE"
         --log-level=INFO
         --stats=5m
-        # ИСПРАВЛЕНО: УДАЛЕНА НЕВЕРНАЯ ОПЦИЯ --local-encoding=UTF-8
-        # Rclone по умолчанию работает с UTF-8, дополнительная настройка не требуется
-        # Вместо этого используем --track-renames для отслеживания переименованных файлов
         --track-renames
     )
     
