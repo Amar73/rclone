@@ -106,19 +106,25 @@ retry_command() {
   local delay="$1";   shift
   local -a cmd=( "$@" )
 
+  # Красиво собрать команду в одну строку с корректным экранированием
+  local cmd_str
+  cmd_str="$(printf '%q ' "${cmd[@]}")"
+
+  local rc=0
   for ((attempt=1; attempt<=retries; attempt++)); do
-    log INFO "Попытка ${attempt}/${retries}: ${cmd[*]}"
-    # Пишем stdout/stderr команды в текстовый лог скрипта; JSON-лог rclone остаётся в своем файле
-    if "${cmd[@]}" >>"$LOGFILE" 2>&1; then
+    log INFO "Попытка ${attempt}/${retries}: ${cmd_str}"
+    # ВАЖНО: запускаем массивом, без eval; stdout/stderr уходит в текстовый лог скрипта
+    "${cmd[@]}" >>"$LOGFILE" 2>&1
+    rc=$?
+    if (( rc == 0 )); then
       return 0
     fi
-    local rc=$?
-    log WARNING "Ошибка (rc=${rc}): ${cmd[*]}. Повтор через ${delay}s"
+    log WARNING "Ошибка (rc=${rc}): ${cmd_str}. Повтор через ${delay}s"
     sleep "$delay"
   done
 
-  log ERROR "Команда не выполнилась после ${retries} попыток: ${cmd[*]}"
-  return 1
+  log ERROR "Команда не выполнилась после ${retries} попыток: ${cmd_str}"
+  return "$rc"
 }
 
 check_ceph_access() {
@@ -159,15 +165,20 @@ cleanup_old_backups() {
   log INFO "Очистка устаревших данных в $DELETE_BACKUP (старше 30d)"
   [[ -d "$DELETE_BACKUP" ]] || { log ERROR "Каталог $DELETE_BACKUP отсутствует"; return 1; }
 
-  local cfg=()
-  [[ -n "${RCLONE_CONFIG:-}" ]] && cfg+=(--config="$RCLONE_CONFIG")
-
-  # delete старше 30д
-  local del_cmd=( rclone delete --min-age 30d --use-json-log --log-file="$RCLONE_JSONLOG" "${cfg[@]:-}" "local:$DELETE_BACKUP" )
+  # delete старше 30 дней
+  local del_cmd=( rclone delete --min-age 30d --use-json-log --log-file="$RCLONE_JSONLOG" )
+  if [[ -n "${RCLONE_CONFIG:-}" ]]; then
+    del_cmd+=( "--config=$RCLONE_CONFIG" )
+  fi
+  del_cmd+=( "local:$DELETE_BACKUP" )
   retry_command 3 10 "${del_cmd[@]}" || log WARNING "rclone delete завершился с ошибкой (продолжаем)"
 
-  # rmdirs пустых папок (корень сохраняем)
-  local rd_cmd=( rclone rmdirs --leave-root --use-json-log --log-file="$RCLONE_JSONLOG" "${cfg[@]:-}" "local:$DELETE_BACKUP" )
+  # rmdirs пустых папок (корень оставляем)
+  local rd_cmd=( rclone rmdirs --leave-root --use-json-log --log-file="$RCLONE_JSONLOG" )
+  if [[ -n "${RCLONE_CONFIG:-}" ]]; then
+    rd_cmd+=( "--config=$RCLONE_CONFIG" )
+  fi
+  rd_cmd+=( "local:$DELETE_BACKUP" )
   retry_command 3 10 "${rd_cmd[@]}" || log WARNING "rclone rmdirs завершился с ошибкой (продолжаем)"
 
   log INFO "Очистка /backup/deleted завершена"
@@ -213,7 +224,7 @@ backup_dir() {
   [[ -n "${RCLONE_CONFIG:-}" ]] && flags+=(--config="$RCLONE_CONFIG")
 
   local cmd=( rclone sync "${flags[@]}" "$src_dir" "$dest_dir" )
-  log INFO "Команда: ${cmd[*]}"
+  log INFO "Команда: $(printf '%q ' "${cmd[@]}")"
   if ! retry_command 3 15 "${cmd[@]}"; then
     log ERROR "Бэкап каталога $src_dir завершился ошибкой"
     return 1
@@ -260,21 +271,26 @@ backup_dir() {
 # -------------------- СВОДКА / МЕТРИКИ ----------------------------------------
 # Безопасный расчёт количества файлов и байт (с теми же exclude).
 # Для байт используем быстрый метод через lsf --format sp (суммируем размеры).
+
 rclone_count_and_bytes() {
   local path="$1"
 
-  local cfg=()
-  [[ -n "${RCLONE_CONFIG:-}" ]] && cfg+=(--config="$RCLONE_CONFIG")
+  local lsf_common=( --files-only --recursive --exclude-from="$EXCLUDE_FILE" )
+  if [[ -n "${RCLONE_CONFIG:-}" ]]; then
+    lsf_common+=( "--config=$RCLONE_CONFIG" )
+  fi
 
-  # Счётчик файлов (рекурсивно, с фильтрами)
+  # Кол-во файлов
   local cnt
-  cnt=$(rclone lsf --files-only --recursive --exclude-from="$EXCLUDE_FILE" "${cfg[@]:-}" "$path" \
-        | wc -l | tr -d '[:space:]')
+  cnt=$(rclone lsf "${lsf_common[@]}" "$path" | wc -l | tr -d '[:space:]')
 
-  # Сумма байт: формат "s" печатает размер каждого файла; суммируем awk'ом
+  # Сумма байт (формат 's' отдаёт размеры файлов)
+  local size_common=( --files-only --recursive --format s --exclude-from="$EXCLUDE_FILE" )
+  if [[ -n "${RCLONE_CONFIG:-}" ]]; then
+    size_common+=( "--config=$RCLONE_CONFIG" )
+  fi
   local bytes
-  bytes=$(rclone lsf --files-only --recursive --format s --exclude-from="$EXCLUDE_FILE" "${cfg[@]:-}" "$path" \
-          | awk '{s+=$1} END{printf "%s", s+0}')
+  bytes=$(rclone lsf "${size_common[@]}" "$path" | awk '{s+=$1} END{printf "%s", s+0}')
 
   printf '%s %s\n' "$cnt" "$bytes"
 }
