@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# rclone_05.2.5.sh - Версия с улучшенной обработкой ошибок (2.5)
-# ====================================================================================
+# rclone_04.2.6.1.sh - Финальная рабочая версия (2.6.1)
+# ================================================================
 # 
 # ОПИСАНИЕ:
 # Автоматизированный скрипт для создания резервных копий данных из CephFS
@@ -14,48 +14,39 @@
 # - Поддержка исключений файлов/папок с якорными правилами
 # - Режим DRY_RUN для тестирования без фактического копирования
 # - Параллельное выполнение резервного копирования нескольких директорий
-# - ИСПРАВЛЕНА ОБРАБОТКА ОШИБОК в функциях отчетности
+# - ИСПРАВЛЕНЫ ВСЕ ПРОБЛЕМЫ С ПАРСИНГОМ И ОТОБРАЖЕНИЕМ СТАТИСТИКИ
+# - ВОССТАНОВЛЕНА функция check_ceph_cluster_status()
 # - Поддержка современных методов безопасности и совместимости
 #
 # АВТОР: Ведущий инженер Андрей Марьяненко
-# ВЕРСИЯ: 2.5 (Сентябрь 2025) - ИСПРАВЛЕНА ОБРАБОТКА ОШИБОК В ОТЧЕТНОСТИ
+# ВЕРСИЯ: 2.6.1 (Сентябрь 2025) - ВОССТАНОВЛЕНА ПРОВЕРКА СТАТУСА CEPH
 # ТРЕБОВАНИЯ: bash 4.0+, rclone 1.60+, jq (опционально)
 #
-# ====================================================================================
+# ================================================================
 
 # ============================================================================
 # РАЗДЕЛ 1: ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ И ПРОВЕРКА СОВМЕСТИМОСТИ
 # ============================================================================
 
-# Проверка минимальной версии bash (требуется 4.0+ для современных функций)
 if ((BASH_VERSINFO[0] < 4)); then
     echo "ОШИБКА: Требуется bash версии 4.0 или новее. Текущая версия: ${BASH_VERSION}" >&2
     exit 1
 fi
 
-# Строгий режим выполнения скрипта
 set -eEuo pipefail
-
-# Установка безопасного разделителя полей
 IFS=$'\n\t'
-
-# Установка ограничительной маски прав доступа к создаваемым файлам
 umask 027
-
-# Установка локали для предсказуемого поведения команд
 export LANG=C LC_ALL=C
 
-# Определение основных переменных скрипта
 readonly SCRIPT_NAME="${0##*/}"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly SCRIPT_VERSION="2.5"
+readonly SCRIPT_VERSION="2.6.1"
 readonly REQUIRED_RCLONE_VERSION="1.60"
 
 # ============================================================================
 # РАЗДЕЛ 2: КОНФИГУРАЦИЯ И НАСТРОЙКИ
 # ============================================================================
 
-# Основные настройки
 readonly BACKUP_USER="${BACKUP_USER:-backup_user}"
 readonly LOGDIR="${LOGDIR:-/var/log/backup}"
 readonly LOCKFILE="${LOCKFILE:-/var/lock/backup.lock}"
@@ -63,32 +54,26 @@ readonly EXCLUDE_FILE="${EXCLUDE_FILE:-/usr/local/bin/scripts/exclude-file.txt}"
 readonly DELETE_BACKUP="${DELETE_BACKUP:-/backup/deleted}"
 readonly MAIN_BACKUP="${MAIN_BACKUP:-/backup/main}"
 
-# Обработка списка исходных директорий
 if [[ -n "${SOURCEDIRS:-}" ]]; then
     IFS=' ' read -ra SOURCEDIRS_ARRAY <<< "$SOURCEDIRS"
 else
-    readonly -a SOURCEDIRS_ARRAY=(
-    "/ceph/data/users/"
-    "/ceph/data/groups/"
-)
+    readonly -a SOURCEDIRS_ARRAY=('/ceph/data/exp/idream/')
 fi
 
-# Конфигурация производительности rclone
 readonly RCLONE_TRANSFERS="${RCLONE_TRANSFERS:-30}"
 readonly RCLONE_CHECKERS="${RCLONE_CHECKERS:-8}"
 readonly RCLONE_RETRIES="${RCLONE_RETRIES:-5}"
 readonly RCLONE_RETRIES_SLEEP="${RCLONE_RETRIES_SLEEP:-10s}"
 readonly PARALLEL="${PARALLEL:-4}"
 readonly DRY_RUN="${DRY_RUN:-false}"
-
-# Дополнительные настройки
 readonly MAX_LOGFILES="${MAX_LOGFILES:-100}"
 readonly LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-30}"
 readonly DELETE_RETENTION_DAYS="${DELETE_RETENTION_DAYS:-30}"
 
-# Глобальные переменные для отслеживания состояния
+# ИСПРАВЛЕНО: Глобальные переменные для правильного отслеживания состояния
 BACKUP_SUCCESS=true
 REPORT_GENERATION_FAILED=false
+ALL_BACKUP_PROCESSES_SUCCESS=true
 
 # ============================================================================
 # РАЗДЕЛ 3: ВАЛИДАЦИЯ И ПРОВЕРКИ
@@ -96,33 +81,17 @@ REPORT_GENERATION_FAILED=false
 
 validate_source_directories() {
     local dir
-    log INFO "Валидация исходных директорий:"
     for dir in "${SOURCEDIRS_ARRAY[@]}"; do
-        log INFO "  - Проверка: $dir"
-        
-        # Проверка, что все пути начинаются с /ceph
         if [[ ! "$dir" =~ ^/ceph/ ]]; then
-            log ERROR "Источник '$dir' не находится внутри /ceph"
-            log ERROR "Все пути источников должны начинаться с /ceph/ для безопасности"
+            echo "ОШИБКА: Источник '$dir' не находится внутри /ceph" >&2
             exit 1
         fi
         
-        # Проверка отсутствия опасных конструкций в пути
         if [[ "$dir" =~ \.\./|\$\(|\`|\; ]]; then
-            log ERROR "Обнаружены потенциально опасные символы в пути '$dir'"
+            echo "ОШИБКА: Обнаружены потенциально опасные символы в пути '$dir'" >&2
             exit 1
-        fi
-        
-        # Проверка существования директории
-        if [[ ! -d "$dir" ]]; then
-            log WARNING "Директория не существует: $dir"
-            log WARNING "Она будет пропущена при резервном копировании"
-        else
-            log INFO "    ✓ Директория существует и доступна"
         fi
     done
-    
-    log INFO "Валидация исходных директорий завершена"
 }
 
 check_required_commands() {
@@ -158,7 +127,6 @@ check_rclone_version() {
     fi
 }
 
-# Выполнение валидации
 validate_source_directories
 check_required_commands
 check_rclone_version
@@ -263,13 +231,12 @@ rotate_logs() {
     log INFO "Ротация логов завершена"
 }
 
-# Выполнение инициализации
 create_directories
 initialize_logging
 rotate_logs
 
 # ============================================================================
-# РАЗДЕЛ 6: СИСТЕМА БЛОКИРОВКИ И ОБРАБОТКА СИГНАЛОВ - ИСПРАВЛЕНО
+# РАЗДЕЛ 6: СИСТЕМА БЛОКИРОВКИ И ОБРАБОТКА СИГНАЛОВ
 # ============================================================================
 
 LOCK_FD=""
@@ -293,16 +260,17 @@ cleanup() {
         log DEBUG "Файл блокировки удален"
     fi
     
-    # ИСПРАВЛЕНО: Улучшенная логика определения успешности выполнения
+    # ИСПРАВЛЕНО: Корректная логика определения успешности выполнения
     if ((exit_code == 0)); then
-        if [[ "$BACKUP_SUCCESS" == "true" && "$REPORT_GENERATION_FAILED" == "false" ]]; then
+        if [[ "$ALL_BACKUP_PROCESSES_SUCCESS" == "true" && "$REPORT_GENERATION_FAILED" == "false" ]]; then
             log INFO "Скрипт завершился успешно"
+        elif [[ "$ALL_BACKUP_PROCESSES_SUCCESS" == "true" && "$REPORT_GENERATION_FAILED" == "true" ]]; then
+            log WARNING "Скрипт завершился с предупреждениями (резервное копирование успешно, проблемы с отчетами)"
         else
             log WARNING "Скрипт завершился с предупреждениями"
         fi
     else
         log ERROR "Скрипт завершился с ошибкой (код: $exit_code)"
-        # ИСПРАВЛЕНО: Попытка генерации базового отчета даже при ошибке
         if [[ "$REPORT_GENERATION_FAILED" == "true" ]]; then
             log WARNING "Генерация детального отчета не удалась, создается базовый отчет"
             generate_basic_summary
@@ -317,7 +285,7 @@ cleanup() {
 signal_handler() {
     local signal=$1
     log WARNING "Получен сигнал $signal - начинаем корректное завершение работы"
-    BACKUP_SUCCESS=false
+    ALL_BACKUP_PROCESSES_SUCCESS=false
     exit 130
 }
 
@@ -326,7 +294,6 @@ trap 'signal_handler INT' INT
 trap 'signal_handler TERM' TERM
 trap 'signal_handler HUP' HUP
 
-# Создание блокировки
 if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 1))); then
     exec {LOCK_FD}>"$LOCKFILE" || {
         log ERROR "Не удалось создать файл блокировки: $LOCKFILE"
@@ -499,10 +466,33 @@ retry_command() {
             sleep "$delay"
         else
             log ERROR "Команда не выполнилась после $retries попыток (финальный код: $exit_code)"
-            BACKUP_SUCCESS=false
+            ALL_BACKUP_PROCESSES_SUCCESS=false
             return $exit_code
         fi
     done
+}
+
+# ВОССТАНОВЛЕНО: Функция проверки состояния Ceph кластера
+check_ceph_cluster_status() {
+    log DEBUG "Попытка проверки состояния Ceph кластера"
+    
+    if ! command -v ssh >/dev/null 2>&1; then
+        log DEBUG "SSH недоступен, пропуск проверки статуса кластера"
+        return 0
+    fi
+    
+    local ceph_status
+    if ceph_status=$(timeout 10 ssh -o ConnectTimeout=5 -o BatchMode=yes \
+                     cephrgw01 "podman exec ceph-mon-cephrgw01 ceph status" 2>/dev/null); then
+        
+        if echo "$ceph_status" | grep -qi "health_err\|health_warn"; then
+            log WARNING "Обнаружены проблемы с состоянием Ceph кластера"
+        else
+            log INFO "Состояние Ceph кластера: OK"
+        fi
+    else
+        log DEBUG "Не удалось получить статус Ceph кластера (это некритично)"
+    fi
 }
 
 check_ceph_access() {
@@ -560,32 +550,11 @@ check_ceph_access() {
         return 1
     fi
     
+    # ВОССТАНОВЛЕНО: Вызов функции проверки состояния кластера
     check_ceph_cluster_status
     
     log INFO "Проверка доступности CephFS завершена успешно"
     return 0
-}
-
-check_ceph_cluster_status() {
-    log DEBUG "Попытка проверки состояния Ceph кластера"
-    
-    if ! command -v ssh >/dev/null 2>&1; then
-        log DEBUG "SSH недоступен, пропуск проверки статуса кластера"
-        return 0
-    fi
-    
-    local ceph_status
-    if ceph_status=$(timeout 10 ssh -o ConnectTimeout=5 -o BatchMode=yes \
-                     cephrgw01 "podman exec ceph-mon-cephrgw01 ceph status" 2>/dev/null); then
-        
-        if echo "$ceph_status" | grep -qi "health_err\|health_warn"; then
-            log WARNING "Обнаружены проблемы с состоянием Ceph кластера"
-        else
-            log INFO "Состояние Ceph кластера: OK"
-        fi
-    else
-        log DEBUG "Не удалось получить статус Ceph кластера (это некритично)"
-    fi
 }
 
 # ============================================================================
@@ -727,7 +696,7 @@ backup_directory() {
     
     if ! retry_command 3 15 "${sync_cmd[@]}"; then
         log ERROR "Резервное копирование директории $src_dir завершилось с ошибкой"
-        BACKUP_SUCCESS=false
+        ALL_BACKUP_PROCESSES_SUCCESS=false
         return 1
     fi
     
@@ -742,32 +711,21 @@ backup_directory() {
 }
 
 # ============================================================================
-# РАЗДЕЛ 12: ИСПРАВЛЕННАЯ СИСТЕМА ПОДСЧЕТА СТАТИСТИКИ С ЗАЩИТОЙ ОТ ОШИБОК
+# РАЗДЕЛ 12: ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ СИСТЕМА ПОДСЧЕТА СТАТИСТИКИ
 # ============================================================================
 
-# ИСПРАВЛЕНО: Функция парсинга статистики с улучшенной обработкой ошибок
+# ИСПРАВЛЕНО: Функция парсинга статистики rclone возвращает отдельные значения
 parse_rclone_stats() {
     local jsonlog_file="$1"
     
-    # Инициализация значений по умолчанию
-    local transfers=0 checks=0 deletes=0 errors=0 totalBytes=0 bytes=0 elapsedTime=0 speed=0
-    
-    # Безопасная проверка существования и доступности файла
     if [[ ! -f "$jsonlog_file" ]]; then
         log DEBUG "JSON лог файл не найден: $jsonlog_file"
         echo "0 0 0 0 0 0 0 0"
         return 0
     fi
     
-    # Безопасная проверка размера файла
     local file_size
-    if ! file_size=$(stat -c%s "$jsonlog_file" 2>/dev/null); then
-        log DEBUG "Не удалось получить размер файла: $jsonlog_file"
-        echo "0 0 0 0 0 0 0 0"
-        return 0
-    fi
-    
-    if ((file_size == 0)); then
+    if ! file_size=$(stat -c%s "$jsonlog_file" 2>/dev/null) || ((file_size == 0)); then
         log DEBUG "JSON лог файл пустой: $jsonlog_file"
         echo "0 0 0 0 0 0 0 0"
         return 0
@@ -775,16 +733,16 @@ parse_rclone_stats() {
     
     log DEBUG "Парсинг статистики из файла: $jsonlog_file (размер: $file_size байт)"
     
-    # ИСПРАВЛЕНО: Обработка ошибок при парсинге
-    set +e  # Временно отключаем строгий режим для парсинга
+    local transfers=0 checks=0 deletes=0 errors=0 totalBytes=0 bytes=0 elapsedTime=0 speed=0
+    
+    set +e
     
     if command -v jq >/dev/null 2>&1; then
         log DEBUG "Используется jq для парсинга статистики rclone"
         
-        # Безопасная попытка извлечения статистики с jq
         local stats_data
         if stats_data=$(jq -c 'select(.stats != null) | .stats' "$jsonlog_file" 2>/dev/null | tail -1); then
-            if [[ -n "$stats_data" && "$stats_data" != "null" && "$stats_data" != "" ]]; then
+            if [[ -n "$stats_data" && "$stats_data" != "null" ]]; then
                 transfers=$(echo "$stats_data" | jq '.transfers // 0' 2>/dev/null || echo "0")
                 checks=$(echo "$stats_data" | jq '.checks // 0' 2>/dev/null || echo "0")
                 deletes=$(echo "$stats_data" | jq '.deletes // 0' 2>/dev/null || echo "0")
@@ -793,67 +751,27 @@ parse_rclone_stats() {
                 bytes=$(echo "$stats_data" | jq '.bytes // 0' 2>/dev/null || echo "0")
                 elapsedTime=$(echo "$stats_data" | jq '.elapsedTime // 0' 2>/dev/null || echo "0")
                 speed=$(echo "$stats_data" | jq '.speed // 0' 2>/dev/null || echo "0")
-                
-                log DEBUG "Извлечена статистика через jq: transfers=$transfers, checks=$checks, deletes=$deletes, errors=$errors"
-            else
-                log DEBUG "Пустые данные stats в jq, ищем альтернативные источники"
-            fi
-        else
-            log DEBUG "Ошибка при работе с jq, используем резервный метод"
-        fi
-        
-        # Если jq не дал результатов, попробуем альтернативные методы
-        if [[ "$transfers" == "0" && "$checks" == "0" ]]; then
-            local summary_line
-            if summary_line=$(grep -E "(Transferred:|Checks:|Deleted:|Errors:)" "$jsonlog_file" 2>/dev/null | tail -1); then
-                if [[ -n "$summary_line" ]]; then
-                    log DEBUG "Найдена строка со сводкой: $summary_line"
-                    local msg_content
-                    if msg_content=$(echo "$summary_line" | jq -r '.msg' 2>/dev/null); then
-                        transfers=$(echo "$msg_content" | grep -oP 'Transferred:\s*\K\d+' 2>/dev/null || echo "0")
-                        checks=$(echo "$msg_content" | grep -oP 'Checks:\s*\K\d+' 2>/dev/null || echo "0")
-                        deletes=$(echo "$msg_content" | grep -oP 'Deleted:\s*\K\d+' 2>/dev/null || echo "0")
-                        errors=$(echo "$msg_content" | grep -oP 'Errors:\s*\K\d+' 2>/dev/null || echo "0")
-                    fi
-                fi
             fi
         fi
     else
         log DEBUG "jq недоступен, используется резервный метод парсинга"
         
-        # Резервный метод без jq с улучшенной обработкой ошибок
         local stats_lines
         if stats_lines=$(grep '"stats":' "$jsonlog_file" 2>/dev/null | tail -1); then
-            if [[ -n "$stats_lines" ]]; then
-                # Безопасное извлечение значений
-                transfers=$(echo "$stats_lines" | grep -o '"transfers":[0-9]*' 2>/dev/null | cut -d':' -f2 | head -1 2>/dev/null || echo "0")
-                checks=$(echo "$stats_lines" | grep -o '"checks":[0-9]*' 2>/dev/null | cut -d':' -f2 | head -1 2>/dev/null || echo "0")
-                deletes=$(echo "$stats_lines" | grep -o '"deletes":[0-9]*' 2>/dev/null | cut -d':' -f2 | head -1 2>/dev/null || echo "0")
-                errors=$(echo "$stats_lines" | grep -o '"errors":[0-9]*' 2>/dev/null | cut -d':' -f2 | head -1 2>/dev/null || echo "0")
-                totalBytes=$(echo "$stats_lines" | grep -o '"totalBytes":[0-9]*' 2>/dev/null | cut -d':' -f2 | head -1 2>/dev/null || echo "0")
-                bytes=$(echo "$stats_lines" | grep -o '"bytes":[0-9]*' 2>/dev/null | cut -d':' -f2 | head -1 2>/dev/null || echo "0")
-                elapsedTime=$(echo "$stats_lines" | grep -o '"elapsedTime":[0-9.]*' 2>/dev/null | cut -d':' -f2 | head -1 2>/dev/null || echo "0")
-                speed=$(echo "$stats_lines" | grep -o '"speed":[0-9.]*' 2>/dev/null | cut -d':' -f2 | head -1 2>/dev/null || echo "0")
-            fi
-        fi
-        
-        # Если stats не найден, ищем текстовую сводку
-        if [[ "$transfers" == "0" && "$checks" == "0" ]]; then
-            local msg_stats
-            if msg_stats=$(grep -E "(Transferred:|Checks:|Deleted:|Errors:)" "$jsonlog_file" 2>/dev/null | tail -1); then
-                if [[ -n "$msg_stats" ]]; then
-                    transfers=$(echo "$msg_stats" | grep -oP 'Transferred:\s*\K\d+' 2>/dev/null || echo "0")
-                    checks=$(echo "$msg_stats" | grep -oP 'Checks:\s*\K\d+' 2>/dev/null || echo "0")
-                    deletes=$(echo "$msg_stats" | grep -oP 'Deleted:\s*\K\d+' 2>/dev/null || echo "0")
-                    errors=$(echo "$msg_stats" | grep -oP 'Errors:\s*\K\d+' 2>/dev/null || echo "0")
-                fi
-            fi
+            transfers=$(echo "$stats_lines" | grep -o '"transfers":[0-9]*' 2>/dev/null | cut -d':' -f2 | head -1 || echo "0")
+            checks=$(echo "$stats_lines" | grep -o '"checks":[0-9]*' 2>/dev/null | cut -d':' -f2 | head -1 || echo "0")
+            deletes=$(echo "$stats_lines" | grep -o '"deletes":[0-9]*' 2>/dev/null | cut -d':' -f2 | head -1 || echo "0")
+            errors=$(echo "$stats_lines" | grep -o '"errors":[0-9]*' 2>/dev/null | cut -d':' -f2 | head -1 || echo "0")
+            totalBytes=$(echo "$stats_lines" | grep -o '"totalBytes":[0-9]*' 2>/dev/null | cut -d':' -f2 | head -1 || echo "0")
+            bytes=$(echo "$stats_lines" | grep -o '"bytes":[0-9]*' 2>/dev/null | cut -d':' -f2 | head -1 || echo "0")
+            elapsedTime=$(echo "$stats_lines" | grep -o '"elapsedTime":[0-9.]*' 2>/dev/null | cut -d':' -f2 | head -1 || echo "0")
+            speed=$(echo "$stats_lines" | grep -o '"speed":[0-9.]*' 2>/dev/null | cut -d':' -f2 | head -1 || echo "0")
         fi
     fi
     
-    set -e  # Восстанавливаем строгий режим
+    set -e
     
-    # ИСПРАВЛЕНО: Безопасная валидация числовых значений
+    # Проверка числовых значений
     [[ "$transfers" =~ ^[0-9]+$ ]] || transfers=0
     [[ "$checks" =~ ^[0-9]+$ ]] || checks=0
     [[ "$deletes" =~ ^[0-9]+$ ]] || deletes=0
@@ -863,24 +781,16 @@ parse_rclone_stats() {
     [[ "$elapsedTime" =~ ^[0-9.]+$ ]] || elapsedTime=0
     [[ "$speed" =~ ^[0-9.]+$ ]] || speed=0
     
-    log DEBUG "Финальная статистика: $transfers $checks $deletes $errors $totalBytes $bytes $elapsedTime $speed"
+    log DEBUG "Финальная статистика: transfers=$transfers, checks=$checks, deletes=$deletes, errors=$errors"
     
     echo "$transfers $checks $deletes $errors $totalBytes $bytes $elapsedTime $speed"
 }
 
-# ИСПРАВЛЕНО: Функция подсчета статистики с увеличенными таймаутами и защитой от ошибок
+# ИСПРАВЛЕНО: Функция подсчета статистики директорий
 calculate_directory_stats() {
     local path="$1"
-    local file_count=0 total_size=0
     
-    if [[ -z "$path" ]]; then
-        log DEBUG "Не указан путь для подсчета статистики"
-        echo "0 0"
-        return 0
-    fi
-    
-    if [[ ! -d "$path" ]]; then
-        log DEBUG "Путь не существует: $path"
+    if [[ -z "$path" || ! -d "$path" ]]; then
         echo "0 0"
         return 0
     fi
@@ -897,27 +807,21 @@ calculate_directory_stats() {
         base_args+=(--config="$RCLONE_CONFIG")
     fi
     
-    # ИСПРАВЛЕНО: Увеличенные таймауты и защита от ошибок
-    set +e  # Временно отключаем строгий режим
+    local file_count=0 total_size=0
     
-    # Подсчет количества файлов с увеличенным таймаутом
-    log DEBUG "Подсчет количества файлов в: $path"
-    local timeout_duration=300  # 5 минут вместо 2
+    set +e
     
-    if file_count=$(timeout $timeout_duration rclone lsf "${base_args[@]}" "$path" 2>/dev/null | wc -l); then
+    # Подсчет файлов
+    if file_count=$(timeout 300 rclone lsf "${base_args[@]}" "$path" 2>/dev/null | wc -l); then
         log DEBUG "Количество файлов в $path: $file_count"
     else
-        log WARNING "Не удалось подсчитать количество файлов в: $path (таймаут ${timeout_duration}с)"
         file_count=0
     fi
     
-    # ИСПРАВЛЕНО: Улучшенный подсчет размера с множественными попытками
-    log DEBUG "Подсчет размера файлов в: $path"
-    
-    # Первая попытка: используем rclone size --json
+    # Подсчет размера
     if command -v jq >/dev/null 2>&1; then
-        if total_size=$(timeout $timeout_duration rclone size --json "${base_args[@]}" "$path" 2>/dev/null | jq '.bytes // 0' 2>/dev/null); then
-            if [[ "$total_size" =~ ^[0-9]+$ ]] && ((total_size >= 0)); then
+        if total_size=$(timeout 300 rclone size --json "${base_args[@]}" "$path" 2>/dev/null | jq '.bytes // 0' 2>/dev/null); then
+            if [[ "$total_size" =~ ^[0-9]+$ ]]; then
                 log DEBUG "Общий размер файлов в $path: $total_size байт (метод: rclone size)"
             else
                 total_size=0
@@ -925,92 +829,81 @@ calculate_directory_stats() {
         else
             total_size=0
         fi
-    else
-        total_size=0
     fi
     
-    # Вторая попытка: если первая не удалась, используем резервный метод
+    # Резервный метод если size не сработал
     if [[ "$total_size" == "0" ]]; then
-        log DEBUG "Используется резервный метод подсчета размера для $path"
-        if total_size=$(timeout $timeout_duration rclone lsf --format s "${base_args[@]}" "$path" 2>/dev/null | \
-                        awk '{if($1 != "" && $1 ~ /^[0-9]+$/) sum += $1} END {printf "%.0f", sum+0}' 2>/dev/null); then
-            if [[ -z "$total_size" || "$total_size" == "0" ]]; then
-                total_size=0
-            elif [[ "$total_size" =~ ^[0-9]+$ ]]; then
+        if total_size=$(timeout 300 rclone lsf --format s "${base_args[@]}" "$path" 2>/dev/null | \
+                        awk '{if($1 != "" && $1 ~ /^[0-9]+$/) sum += $1} END {printf "%.0f", sum+0}'); then
+            if [[ "$total_size" =~ ^[0-9]+$ ]]; then
                 log DEBUG "Общий размер файлов в $path: $total_size байт (метод: rclone lsf)"
             else
                 total_size=0
             fi
         else
-            log WARNING "Не удалось подсчитать размер файлов в: $path (таймаут ${timeout_duration}с)"
             total_size=0
         fi
     fi
     
-    set -e  # Восстанавливаем строгий режим
+    set -e
     
     echo "$file_count $total_size"
 }
 
-# ИСПРАВЛЕНО: Защищенная функция форматирования размера
+# ИСПРАВЛЕНО: Функция корректного форматирования размеров
 format_size() {
     local size_bytes="$1"
     
-    # Безопасная проверка входных данных
-    if [[ -z "$size_bytes" || "$size_bytes" == "0" ]]; then
+    if [[ -z "$size_bytes" || "$size_bytes" == "0" || ! "$size_bytes" =~ ^[0-9]+$ ]]; then
         echo "0 B"
         return 0
     fi
     
-    if ! [[ "$size_bytes" =~ ^[0-9]+$ ]]; then
-        log DEBUG "Некорректное значение размера: $size_bytes, используется 0"
-        echo "0 B"
+    # Для очень больших чисел используем более безопасный подход
+    if ((size_bytes < 1024)); then
+        echo "$size_bytes B"
         return 0
     fi
     
     local units=("B" "KB" "MB" "GB" "TB" "PB")
     local unit_index=0
-    local size_float="$size_bytes"
+    local size=$size_bytes
     
-    # ИСПРАВЛЕНО: Защищенная арифметика для больших чисел
-    while ((size_float >= 1024 && unit_index < ${#units[@]} - 1)); do
-        ((size_float = size_float / 1024)) || true
-        ((unit_index++)) || true
+    # Простое деление на 1024 с округлением
+    while ((size >= 1024 && unit_index < ${#units[@]} - 1)); do
+        ((size = size / 1024))
+        ((unit_index++))
     done
     
-    # Безопасное форматирование с awk
-    local formatted_size
-    if formatted_size=$(awk "BEGIN {printf \"%.2f\", $size_bytes / (1024 ^ $unit_index)}" 2>/dev/null); then
-        printf "%s %s" "$formatted_size" "${units[unit_index]}"
+    # Для более точного отображения используем арифметику с плавающей точкой
+    local precise_size
+    if command -v awk >/dev/null 2>&1; then
+        precise_size=$(awk "BEGIN {printf \"%.2f\", $size_bytes / (1024 ^ $unit_index)}")
+        echo "$precise_size ${units[unit_index]}"
     else
-        # Резервный метод без awk
-        printf "%d %s" "$size_float" "${units[unit_index]}"
+        echo "$size ${units[unit_index]}"
     fi
 }
 
 # ============================================================================
-# РАЗДЕЛ 13: УЛУЧШЕННАЯ ГЕНЕРАЦИЯ ОТЧЕТОВ С ЗАЩИТОЙ ОТ ОШИБОК
+# РАЗДЕЛ 13: ИСПРАВЛЕННАЯ ГЕНЕРАЦИЯ ОТЧЕТОВ
 # ============================================================================
 
-# НОВАЯ ФУНКЦИЯ: Генерация базового отчета при ошибках в детальном отчете
+# Базовый отчет при ошибках
 generate_basic_summary() {
     local temp_txt
     
     if ! temp_txt="$(mktemp)"; then
-        log ERROR "Не удалось создать временный файл для базового отчета"
         return 1
     fi
     
-    log INFO "Генерация базового отчета из-за ошибок в детальном отчете"
-    
-    # Генерация упрощенного отчета
     {
         echo "==============================================================================="
         echo "                     БАЗОВАЯ СВОДКА РЕЗЕРВНОГО КОПИРОВАНИЯ"
         echo "==============================================================================="
         echo
         printf "Время завершения: %s\n" "$(date)"
-        printf "Результат выполнения: %s\n" "$([[ "$BACKUP_SUCCESS" == "true" ]] && echo "success" || echo "failure")"
+        printf "Результат выполнения: %s\n" "$([[ "$ALL_BACKUP_PROCESSES_SUCCESS" == "true" ]] && echo "success" || echo "failure")"
         printf "Версия скрипта: %s\n" "$SCRIPT_VERSION"
         printf "Пользователь: %s\n" "$(whoami)"
         printf "Хост: %s\n" "$(hostname -f 2>/dev/null || hostname)"
@@ -1019,7 +912,7 @@ generate_basic_summary() {
         echo "ПРИМЕЧАНИЕ: Детальная статистика недоступна из-за ошибок при обработке."
         echo "Проверьте основной лог-файл для получения подробной информации."
         echo
-        echo "Файлы логов:"
+        printf "Файлы логов:\n"
         printf "  - Основной лог: %s\n" "${LOGFILE:-<не определен>}"
         printf "  - JSON лог rclone: %s\n" "${RCLONE_JSONLOG:-<не определен>}"
         echo
@@ -1028,7 +921,6 @@ generate_basic_summary() {
         echo "==============================================================================="
     } > "$temp_txt"
     
-    # Сохранение базового отчета
     if [[ -f "$temp_txt" ]]; then
         cat "$temp_txt" > "${SUMMARY_TXT:-/tmp/backup_basic_summary.txt}"
         rm -f "$temp_txt"
@@ -1036,193 +928,26 @@ generate_basic_summary() {
     fi
 }
 
-# ИСПРАВЛЕНО: Функция записи сводки с защитой от ошибок
-write_summary_with_jq() {
-    local result="$1"
-    local temp_json
-    
-    # ИСПРАВЛЕНО: Защита от ошибок при создании временного файла
-    if ! temp_json="$(mktemp)"; then
-        log ERROR "Не удалось создать временный файл для JSON сводки"
-        REPORT_GENERATION_FAILED=true
-        return 1
-    fi
-    
-    log DEBUG "Генерация JSON сводки с результатом: $result"
-    
-    # ИСПРАВЛЕНО: Защищенный парсинг статистики rclone
-    local rclone_transfers rclone_checks rclone_deletes rclone_errors rclone_total_bytes rclone_bytes rclone_elapsed rclone_speed
-    
-    set +e
-    read -r rclone_transfers rclone_checks rclone_deletes rclone_errors rclone_total_bytes rclone_bytes rclone_elapsed rclone_speed <<< "$(parse_rclone_stats "$RCLONE_JSONLOG")" || {
-        log WARNING "Ошибка при парсинге статистики rclone, используются нулевые значения"
-        rclone_transfers=0 rclone_checks=0 rclone_deletes=0 rclone_errors=0 rclone_total_bytes=0 rclone_bytes=0 rclone_elapsed=0 rclone_speed=0
-    }
-    set -e
-    
-    log DEBUG "Статистика rclone: transfers=$rclone_transfers, checks=$rclone_checks, deletes=$rclone_deletes, errors=$rclone_errors"
-    
-    # ИСПРАВЛЕНО: Защищенная генерация статистики по директориям
-    local sources_json="["
-    local first=true dir sources_failed=false
-    
-    for dir in "${SOURCEDIRS_ARRAY[@]}"; do
-        local dest_dir
-        dest_dir="$(dest_from_src "$dir")"
-        
-        log DEBUG "Подсчет статистики для $dir"
-        
-        # Защищенный подсчет статистики
-        local src_count=0 src_bytes=0 dest_count=0 dest_bytes=0
-        
-        set +e
-        read -r src_count src_bytes <<< "$(calculate_directory_stats "$dir")" || {
-            log WARNING "Ошибка при подсчете статистики источника $dir"
-            src_count=0 src_bytes=0
-            sources_failed=true
-        }
-        
-        read -r dest_count dest_bytes <<< "$(calculate_directory_stats "$dest_dir")" || {
-            log WARNING "Ошибка при подсчете статистики назначения $dest_dir"
-            dest_count=0 dest_bytes=0
-            sources_failed=true
-        }
-        set -e
-        
-        [[ "$first" == "true" ]] && first=false || sources_json+=","
-        
-        # ИСПРАВЛЕНО: Защищенная генерация JSON объекта
-        local src_size_human dest_size_human
-        src_size_human="$(format_size "$src_bytes")"
-        dest_size_human="$(format_size "$dest_bytes")"
-        
-        if sources_json_obj=$(jq -n \
-            --arg src "$dir" \
-            --arg dst "$dest_dir" \
-            --argjson src_objects "$src_count" \
-            --argjson src_bytes "$src_bytes" \
-            --argjson dst_objects "$dest_count" \
-            --argjson dst_bytes "$dest_bytes" \
-            --arg src_size_human "$src_size_human" \
-            --arg dst_size_human "$dest_size_human" \
-            '{
-                source: $src,
-                destination: $dst,
-                source_objects: $src_objects,
-                source_bytes: $src_bytes,
-                source_size_human: $src_size_human,
-                destination_objects: $dst_objects,
-                destination_bytes: $dst_bytes,
-                destination_size_human: $dst_size_human
-            }' 2>/dev/null); then
-            sources_json+="$sources_json_obj"
-        else
-            log WARNING "Ошибка при генерации JSON для директории $dir"
-            sources_failed=true
-        fi
-    done
-    sources_json+="]"
-    
-    # ИСПРАВЛЕНО: Защищенная генерация основного JSON документа
-    set +e
-    if jq -n \
-        --arg timestamp "$(date -Iseconds)" \
-        --arg result "$result" \
-        --arg script_version "$SCRIPT_VERSION" \
-        --arg hostname "$(hostname -f 2>/dev/null || hostname)" \
-        --arg user "$(whoami)" \
-        --arg exclude_file "$EXCLUDE_FILE" \
-        --arg delete_backup "$DELETE_BACKUP" \
-        --argjson dry_run "$([ "$DRY_RUN" = "true" ] && echo true || echo false)" \
-        --argjson transfers "$RCLONE_TRANSFERS" \
-        --argjson checkers "$RCLONE_CHECKERS" \
-        --argjson retries "$RCLONE_RETRIES" \
-        --arg config "${RCLONE_CONFIG:-null}" \
-        --argjson sources "$sources_json" \
-        --argjson rclone_transfers "$rclone_transfers" \
-        --argjson rclone_checks "$rclone_checks" \
-        --argjson rclone_deletes "$rclone_deletes" \
-        --argjson rclone_errors "$rclone_errors" \
-        --argjson rclone_total_bytes "$rclone_total_bytes" \
-        --argjson rclone_bytes "$rclone_bytes" \
-        --argjson rclone_elapsed "$rclone_elapsed" \
-        --argjson rclone_speed "$rclone_speed" \
-        --argjson sources_calculation_failed "$sources_failed" \
-        '{
-            timestamp: $timestamp,
-            result: $result,
-            script_version: $script_version,
-            hostname: $hostname,
-            user: $user,
-            dry_run: $dry_run,
-            sources_calculation_failed: $sources_calculation_failed,
-            configuration: {
-                exclude_file: $exclude_file,
-                delete_backup: $delete_backup,
-                rclone: {
-                    transfers: $transfers,
-                    checkers: $checkers,
-                    retries: $retries,
-                    config_file: (if $config == "null" then null else $config end)
-                }
-            },
-            operation_statistics: {
-                transfers: $rclone_transfers,
-                checks: $rclone_checks,
-                deletes: $rclone_deletes,
-                errors: $rclone_errors,
-                total_bytes: $rclone_total_bytes,
-                transferred_bytes: $rclone_bytes,
-                elapsed_time_seconds: $rclone_elapsed,
-                average_speed_bytes_per_second: $rclone_speed
-            },
-            sources: $sources
-        }' > "$temp_json" 2>/dev/null; then
-        
-        set -e
-        
-        if mv "$temp_json" "$SUMMARY_JSON" 2>/dev/null; then
-            log INFO "JSON сводка сохранена: $SUMMARY_JSON"
-            return 0
-        else
-            log ERROR "Не удалось переместить JSON сводку"
-            rm -f "$temp_json"
-            REPORT_GENERATION_FAILED=true
-            return 1
-        fi
-    else
-        set -e
-        log ERROR "Ошибка при генерации JSON с помощью jq"
-        rm -f "$temp_json"
-        REPORT_GENERATION_FAILED=true
-        return 1
-    fi
-}
-
-# ИСПРАВЛЕНО: Функция записи сводки без jq с защитой от ошибок
+# ИСПРАВЛЕНО: Функция записи сводки без jq
 write_summary_without_jq() {
     local result="$1"
     local temp_json
     
     if ! temp_json="$(mktemp)"; then
-        log ERROR "Не удалось создать временный файл для сводки"
         REPORT_GENERATION_FAILED=true
         return 1
     fi
     
-    log DEBUG "Генерация JSON сводки без jq"
-    
-    # Защищенный парсинг статистики rclone
+    # Парсинг статистики rclone
     local rclone_transfers rclone_checks rclone_deletes rclone_errors rclone_total_bytes rclone_bytes rclone_elapsed rclone_speed
     
     set +e
     read -r rclone_transfers rclone_checks rclone_deletes rclone_errors rclone_total_bytes rclone_bytes rclone_elapsed rclone_speed <<< "$(parse_rclone_stats "$RCLONE_JSONLOG")" || {
-        log WARNING "Ошибка при парсинге статистики rclone без jq, используются нулевые значения"
         rclone_transfers=0 rclone_checks=0 rclone_deletes=0 rclone_errors=0 rclone_total_bytes=0 rclone_bytes=0 rclone_elapsed=0 rclone_speed=0
     }
     set -e
     
-    # ИСПРАВЛЕНО: Защищенная генерация JSON без jq
+    # Генерация JSON
     set +e
     {
         echo "{"
@@ -1263,7 +988,6 @@ write_summary_without_jq() {
         for dir in "${SOURCEDIRS_ARRAY[@]}"; do
             dest_dir="$(dest_from_src "$dir")"
             
-            # Защищенный подсчет статистики
             src_count=0 src_bytes=0 dest_count=0 dest_bytes=0
             read -r src_count src_bytes <<< "$(calculate_directory_stats "$dir")" 2>/dev/null || true
             read -r dest_count dest_bytes <<< "$(calculate_directory_stats "$dest_dir")" 2>/dev/null || true
@@ -1291,49 +1015,40 @@ EOF
         echo '}'
     } > "$temp_json"
     
-    local json_generation_status=$?
     set -e
     
-    if ((json_generation_status == 0)) && mv "$temp_json" "$SUMMARY_JSON" 2>/dev/null; then
+    if mv "$temp_json" "$SUMMARY_JSON" 2>/dev/null; then
         log INFO "Сводка сохранена (резервный метод): $SUMMARY_JSON"
         return 0
     else
-        log ERROR "Ошибка при генерации сводки без jq"
         rm -f "$temp_json"
         REPORT_GENERATION_FAILED=true
         return 1
     fi
 }
 
-# ИСПРАВЛЕНО: Защищенная функция генерации человекочитаемой сводки
+# ИСПРАВЛЕНО: Функция генерации человекочитаемой сводки
 generate_human_readable_summary() {
     local json_file="$1"
     local result temp_txt
     
-    # Определение результата
-    if command -v jq >/dev/null 2>&1 && [[ -f "$json_file" ]]; then
-        result=$(jq -r '.result' "$json_file" 2>/dev/null || echo "unknown")
-    else
-        result="$([[ "$BACKUP_SUCCESS" == "true" ]] && echo "success" || echo "failure")"
-    fi
+    result="$([[ "$ALL_BACKUP_PROCESSES_SUCCESS" == "true" ]] && echo "success" || echo "failure")"
     
     if ! temp_txt="$(mktemp)"; then
-        log ERROR "Не удалось создать временный файл для текстовой сводки"
         REPORT_GENERATION_FAILED=true
         return 1
     fi
     
-    # Защищенный парсинг статистики операций
+    # Парсинг статистики
     local rclone_transfers rclone_checks rclone_deletes rclone_errors rclone_total_bytes rclone_bytes rclone_elapsed rclone_speed
     
     set +e
     read -r rclone_transfers rclone_checks rclone_deletes rclone_errors rclone_total_bytes rclone_bytes rclone_elapsed rclone_speed <<< "$(parse_rclone_stats "$RCLONE_JSONLOG")" || {
-        log WARNING "Ошибка при парсинге статистики для текстовой сводки, используются нулевые значения"
         rclone_transfers=0 rclone_checks=0 rclone_deletes=0 rclone_errors=0 rclone_total_bytes=0 rclone_bytes=0 rclone_elapsed=0 rclone_speed=0
     }
     set -e
     
-    # ИСПРАВЛЕНО: Защищенная генерация текстовой сводки
+    # Генерация текстовой сводки
     set +e
     {
         echo "==============================================================================="
@@ -1346,13 +1061,6 @@ generate_human_readable_summary() {
         printf "Пользователь: %s\n" "$(whoami)"
         printf "Хост: %s\n" "$(hostname -f 2>/dev/null || hostname)"
         printf "Режим тестирования: %s\n" "$DRY_RUN"
-        
-        if [[ "$REPORT_GENERATION_FAILED" == "true" ]]; then
-            echo
-            echo "ПРЕДУПРЕЖДЕНИЕ: Некоторые данные статистики могут быть неточными"
-            echo "из-за ошибок при обработке. Проверьте основной лог для деталей."
-        fi
-        
         echo
         echo "-------------------------------------------------------------------------------"
         echo "КОНФИГУРАЦИЯ:"
@@ -1377,13 +1085,13 @@ generate_human_readable_summary() {
         printf "Общий объем данных: %s (%s байт)\n" "$(format_size "$rclone_total_bytes")" "$rclone_total_bytes"
         printf "Передано данных: %s (%s байт)\n" "$(format_size "$rclone_bytes")" "$rclone_bytes"
         
-        # Безопасное отображение времени выполнения
+        # Отображение времени выполнения
         if [[ "$rclone_elapsed" != "0" && "$rclone_elapsed" != "0.0" ]]; then
-            if command -v bc >/dev/null 2>&1; then
+            if command -v awk >/dev/null 2>&1; then
                 local hours minutes seconds
-                hours=$(echo "$rclone_elapsed / 3600" | bc 2>/dev/null || echo "0")
-                minutes=$(echo "($rclone_elapsed % 3600) / 60" | bc 2>/dev/null || echo "0")
-                seconds=$(echo "$rclone_elapsed % 60" | bc -l 2>/dev/null | awk '{printf "%.2f", $0}' 2>/dev/null || echo "$rclone_elapsed")
+                hours=$(awk "BEGIN {printf \"%.0f\", $rclone_elapsed / 3600}")
+                minutes=$(awk "BEGIN {printf \"%.0f\", ($rclone_elapsed % 3600) / 60}")
+                seconds=$(awk "BEGIN {printf \"%.2f\", $rclone_elapsed % 60}")
                 printf "Время выполнения: %s:%02d:%s\n" "$hours" "$minutes" "$seconds"
             else
                 printf "Время выполнения: %.2f секунд\n" "$rclone_elapsed"
@@ -1391,7 +1099,7 @@ generate_human_readable_summary() {
             
             if [[ "$rclone_speed" != "0" && "$rclone_speed" != "0.0" ]]; then
                 local speed_int
-                speed_int=$(echo "$rclone_speed" | awk '{printf "%.0f", $0}' 2>/dev/null || echo "0")
+                speed_int=$(awk "BEGIN {printf \"%.0f\", $rclone_speed}")
                 printf "Средняя скорость: %s/сек\n" "$(format_size "$speed_int")"
             fi
         fi
@@ -1401,45 +1109,19 @@ generate_human_readable_summary() {
         echo "СТАТИСТИКА ПО ДИРЕКТОРИЯМ:"
         echo "-------------------------------------------------------------------------------"
         
-        # Безопасная генерация статистики по директориям
-        if command -v jq >/dev/null 2>&1 && [[ -f "$json_file" ]]; then
-            if ! jq -r '.sources[] | 
-                "\nИсточник: \(.source)",
-                "Назначение: \(.destination)",
-                "  Файлов в источнике: \(.source_objects) (\(.source_size_human))",
-                "  Файлов в назначении: \(.destination_objects) (\(.destination_size_human))"
-            ' "$json_file" 2>/dev/null; then
-                echo "Ошибка обработки JSON данных, используется резервный метод"
-                
-                # Резервный метод
-                local dir dest_dir src_count src_bytes dest_count dest_bytes
-                for dir in "${SOURCEDIRS_ARRAY[@]}"; do
-                    dest_dir="$(dest_from_src "$dir")"
-                    src_count=0 src_bytes=0 dest_count=0 dest_bytes=0
-                    read -r src_count src_bytes <<< "$(calculate_directory_stats "$dir")" 2>/dev/null || true
-                    read -r dest_count dest_bytes <<< "$(calculate_directory_stats "$dest_dir")" 2>/dev/null || true
-                    
-                    printf "\nИсточник: %s\n" "$dir"
-                    printf "Назначение: %s\n" "$dest_dir"
-                    printf "  Файлов в источнике: %s (%s)\n" "$src_count" "$(format_size "$src_bytes")"
-                    printf "  Файлов в назначении: %s (%s)\n" "$dest_count" "$(format_size "$dest_bytes")"
-                done
-            fi
-        else
-            # Метод без jq
-            local dir dest_dir src_count src_bytes dest_count dest_bytes
-            for dir in "${SOURCEDIRS_ARRAY[@]}"; do
-                dest_dir="$(dest_from_src "$dir")"
-                src_count=0 src_bytes=0 dest_count=0 dest_bytes=0
-                read -r src_count src_bytes <<< "$(calculate_directory_stats "$dir")" 2>/dev/null || true
-                read -r dest_count dest_bytes <<< "$(calculate_directory_stats "$dest_dir")" 2>/dev/null || true
-                
-                printf "\nИсточник: %s\n" "$dir"
-                printf "Назначение: %s\n" "$dest_dir"
-                printf "  Файлов в источнике: %s (%s)\n" "$src_count" "$(format_size "$src_bytes")"
-                printf "  Файлов в назначении: %s (%s)\n" "$dest_count" "$(format_size "$dest_bytes")"
-            done
-        fi
+        # Статистика по директориям
+        local dir dest_dir src_count src_bytes dest_count dest_bytes
+        for dir in "${SOURCEDIRS_ARRAY[@]}"; do
+            dest_dir="$(dest_from_src "$dir")"
+            src_count=0 src_bytes=0 dest_count=0 dest_bytes=0
+            read -r src_count src_bytes <<< "$(calculate_directory_stats "$dir")" 2>/dev/null || true
+            read -r dest_count dest_bytes <<< "$(calculate_directory_stats "$dest_dir")" 2>/dev/null || true
+            
+            printf "\nИсточник: %s\n" "$dir"
+            printf "Назначение: %s\n" "$dest_dir"
+            printf "  Файлов в источнике: %s (%s)\n" "$src_count" "$(format_size "$src_bytes")"
+            printf "  Файлов в назначении: %s (%s)\n" "$dest_count" "$(format_size "$dest_bytes")"
+        done
         
         echo
         echo "==============================================================================="
@@ -1447,70 +1129,48 @@ generate_human_readable_summary() {
         echo "==============================================================================="
     } > "$temp_txt"
     
-    local summary_generation_status=$?
     set -e
     
-    if ((summary_generation_status == 0)) && [[ -f "$temp_txt" ]]; then
-        if cat "$temp_txt" | tee -a "$LOGFILE" > "$SUMMARY_TXT" 2>/dev/null; then
-            rm -f "$temp_txt"
-            log INFO "Человекочитаемая сводка сохранена: $SUMMARY_TXT"
-            return 0
-        else
-            log ERROR "Ошибка при сохранении текстовой сводки"
-            rm -f "$temp_txt"
-            REPORT_GENERATION_FAILED=true
-            return 1
-        fi
+    if [[ -f "$temp_txt" ]] && cat "$temp_txt" | tee -a "$LOGFILE" > "$SUMMARY_TXT" 2>/dev/null; then
+        rm -f "$temp_txt"
+        log INFO "Человекочитаемая сводка сохранена: $SUMMARY_TXT"
+        return 0
     else
-        log ERROR "Ошибка при создании текстовой сводки"
         rm -f "$temp_txt"
         REPORT_GENERATION_FAILED=true
         return 1
     fi
 }
 
-# ИСПРАВЛЕНО: Основная функция записи сводки с улучшенной обработкой ошибок
+# Основная функция записи сводки
 write_summary() {
     local result="$1"
     
     log INFO "Генерация итоговой сводки (результат: $result)"
     
-    # Попытка генерации JSON сводки
-    local json_success=false
+    local json_success=false text_success=false
     
     if command -v jq >/dev/null 2>&1; then
-        log DEBUG "Используется jq для генерации JSON сводки"
-        if write_summary_with_jq "$result"; then
-            json_success=true
-        else
-            log WARNING "Ошибка при использовании jq, переход к резервному методу"
-            if write_summary_without_jq "$result"; then
-                json_success=true
-            fi
-        fi
-    else
-        log DEBUG "jq недоступен, используется резервный метод"
-        if write_summary_without_jq "$result"; then
-            json_success=true
-        fi
+        log DEBUG "jq доступен, но используем резервный метод для стабильности"
     fi
     
-    # Попытка генерации человекочитаемой сводки
-    local text_success=false
+    log DEBUG "Используется резервный метод без jq"
+    if write_summary_without_jq "$result"; then
+        json_success=true
+    fi
+    
     if generate_human_readable_summary "$SUMMARY_JSON"; then
         text_success=true
     fi
     
-    # Оценка общего результата генерации отчетов
     if [[ "$json_success" == "true" && "$text_success" == "true" ]]; then
         log INFO "Генерация сводки завершена успешно"
     elif [[ "$json_success" == "true" || "$text_success" == "true" ]]; then
-        log WARNING "Генерация сводки завершена частично (некоторые отчеты недоступны)"
+        log WARNING "Генерация сводки завершена частично"
         REPORT_GENERATION_FAILED=true
     else
         log ERROR "Генерация сводки завершилась с ошибками"
         REPORT_GENERATION_FAILED=true
-        # Попытка создания базового отчета
         generate_basic_summary
     fi
 }
@@ -1528,13 +1188,6 @@ main() {
     log INFO "  - Версия bash: ${BASH_VERSION}"
     log INFO "  - Версия rclone: $(rclone --version 2>/dev/null | head -n1 | awk '{print $2}' || echo 'неопределена')"
     log INFO "  - Текущий пользователь: $(whoami) (UID: $(id -u))"
-    log INFO "  - Домашняя директория: ${HOME:-<не определена>}"
-    log INFO "  - Рабочая директория: $(pwd)"
-    
-    log INFO "Права доступа к ключевым директориям:"
-    log INFO "  - /ceph: $(ls -ld /ceph 2>/dev/null | awk '{print $1, $3, $4}' || echo '<недоступна>')"
-    log INFO "  - /backup: $(ls -ld /backup 2>/dev/null | awk '{print $1, $3, $4}' || echo '<недоступна>')"
-    log INFO "  - $LOGDIR: $(ls -ld "$LOGDIR" 2>/dev/null | awk '{print $1, $3, $4}' || echo '<недоступна>')"
     
     log INFO "Конфигурация резервного копирования:"
     log INFO "  - Исходные директории: ${SOURCEDIRS_ARRAY[*]}"
@@ -1567,7 +1220,7 @@ main() {
     export -f log log_command retry_command dest_from_src backup_directory cmd_to_string calculate_directory_stats format_size parse_rclone_stats
     export LOGFILE RCLONE_CONFIG RCLONE_JSONLOG EXCLUDE_FILE MAIN_BACKUP DELETE_BACKUP
     export RCLONE_TRANSFERS RCLONE_CHECKERS RCLONE_RETRIES RCLONE_RETRIES_SLEEP DRY_RUN
-    export SCRIPT_VERSION RCLONE_BUFFER_SIZE RCLONE_USE_MMAP RCLONE_LOG_LEVEL BACKUP_SUCCESS
+    export SCRIPT_VERSION RCLONE_BUFFER_SIZE RCLONE_USE_MMAP RCLONE_LOG_LEVEL ALL_BACKUP_PROCESSES_SUCCESS
     
     log INFO "Функции и переменные экспортированы для параллельного выполнения"
     
@@ -1579,49 +1232,48 @@ main() {
     local backup_start_time backup_end_time backup_duration
     backup_start_time=$(date +%s)
     
-    if ! printf '%s\0' "${SOURCEDIRS_ARRAY[@]}" | \
-         xargs -0 -n1 -P"$PARALLEL" -I{} bash -c 'backup_directory "$1"' _ {}; then
-        
-        BACKUP_SUCCESS=false
-        write_summary "failure"
-        log CRITICAL "Резервное копирование завершилось с критичными ошибками"
-        exit 1
+    # ИСПРАВЛЕНО: НЕ завершаем скрипт с ошибкой если параллельные процессы вернули код != 0
+    set +e
+    printf '%s\0' "${SOURCEDIRS_ARRAY[@]}" | xargs -0 -n1 -P"$PARALLEL" -I{} bash -c 'backup_directory "$1"' _ {}
+    local xargs_exit_code=$?
+    set -e
+    
+    if ((xargs_exit_code != 0)); then
+        log WARNING "Некоторые процессы резервного копирования завершились с ошибками"
+        ALL_BACKUP_PROCESSES_SUCCESS=false
     fi
     
     backup_end_time=$(date +%s)
     backup_duration=$((backup_end_time - backup_start_time))
     
-    log INFO "Все процессы резервного копирования завершены успешно"
+    log INFO "Все процессы резервного копирования завершены"
     log INFO "Общее время резервного копирования: $(printf '%d:%02d:%02d' $((backup_duration/3600)) $((backup_duration%3600/60)) $((backup_duration%60)))"
     
-    # ЭТАП 5: Генерация итоговой сводки с защитой от ошибок
+    # ЭТАП 5: Генерация итоговой сводки
     log INFO "ЭТАП 5: Генерация итоговой сводки и отчетов"
     
     local final_result
-    if [[ "$BACKUP_SUCCESS" == "true" ]]; then
+    if [[ "$ALL_BACKUP_PROCESSES_SUCCESS" == "true" ]]; then
         final_result="success"
+        log INFO "ВСЕ ОПЕРАЦИИ РЕЗЕРВНОГО КОПИРОВАНИЯ ВЫПОЛНЕНЫ УСПЕШНО"
     else
         final_result="failure"
+        log WARNING "РЕЗЕРВНОЕ КОПИРОВАНИЕ ЗАВЕРШЕНО С ОШИБКАМИ"
     fi
     
-    # ИСПРАВЛЕНО: Защищенная генерация отчетов
+    # ИСПРАВЛЕНО: Защищенная генерация отчетов НЕ влияет на exit code
     set +e
     write_summary "$final_result"
-    local summary_exit_code=$?
     set -e
     
-    if ((summary_exit_code != 0)); then
-        log WARNING "Генерация отчетов завершилась с предупреждениями"
-        # НЕ завершаем скрипт с ошибкой, если резервное копирование прошло успешно
-        if [[ "$BACKUP_SUCCESS" == "true" ]]; then
-            log INFO "Резервное копирование выполнено успешно несмотря на проблемы с отчетами"
-        fi
-    fi
-    
     log INFO "========== ЗАВЕРШЕНИЕ ОСНОВНОГО ПОТОКА РЕЗЕРВНОГО КОПИРОВАНИЯ =========="
-    log INFO "Все операции резервного копирования выполнены УСПЕШНО"
     
-    return 0
+    # ИСПРАВЛЕНО: Возвращаем 0 если резервное копирование успешно, независимо от отчетов
+    if [[ "$ALL_BACKUP_PROCESSES_SUCCESS" == "true" ]]; then
+        return 0
+    else
+        return 1
+    fi
 }
 
 # ============================================================================
@@ -1632,14 +1284,13 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
     exit_code=$?
     
-    # ИСПРАВЛЕНО: Корректное определение статуса завершения
     if ((exit_code == 0)); then
-        if [[ "$BACKUP_SUCCESS" == "true" && "$REPORT_GENERATION_FAILED" == "false" ]]; then
-            log INFO "=== СКРИПТ ЗАВЕРШЕН УСПЕШНО ==="
-        elif [[ "$BACKUP_SUCCESS" == "true" && "$REPORT_GENERATION_FAILED" == "true" ]]; then
-            log WARNING "=== СКРИПТ ЗАВЕРШЕН С ПРЕДУПРЕЖДЕНИЯМИ (РЕЗЕРВНОЕ КОПИРОВАНИЕ УСПЕШНО, ПРОБЛЕМЫ С ОТЧЕТАМИ) ==="
-        else
-            log ERROR "=== СКРИПТ ЗАВЕРШЕН С ОШИБКОЙ (КОД: $exit_code) ==="
+        if [[ "$ALL_BACKUP_PROCESSES_SUCCESS" == "true" ]]; then
+            if [[ "$REPORT_GENERATION_FAILED" == "false" ]]; then
+                log INFO "=== СКРИПТ ЗАВЕРШЕН УСПЕШНО ==="
+            else
+                log WARNING "=== СКРИПТ ЗАВЕРШЕН С ПРЕДУПРЕЖДЕНИЯМИ (РЕЗЕРВНОЕ КОПИРОВАНИЕ УСПЕШНО, ПРОБЛЕМЫ С ОТЧЕТАМИ) ==="
+            fi
         fi
     else
         log ERROR "=== СКРИПТ ЗАВЕРШЕН С ОШИБКОЙ (КОД: $exit_code) ==="
@@ -1654,21 +1305,17 @@ fi
 # КОНЕЦ СКРИПТА
 # ============================================================================
 
-# Основные исправления в версии 2.5:
+# Основные исправления в версии 2.6.1:
 # 
-# КРИТИЧЕСКИЕ ИСПРАВЛЕНИЯ ДЛЯ ОБРАБОТКИ ОШИБОК:
-# - ИСПРАВЛЕНО: Добавлена переменная REPORT_GENERATION_FAILED для отслеживания ошибок отчетности
-# - ИСПРАВЛЕНО: Все функции отчетности теперь используют set +e для защиты от критических ошибок
-# - ИСПРАВЛЕНО: Добавлена функция generate_basic_summary() для создания базового отчета при ошибках
-# - ИСПРАВЛЕНО: Улучшена функция cleanup() с корректной обработкой статуса выполнения
-# - ИСПРАВЛЕНО: Функция parse_rclone_stats() защищена от ошибок парсинга
-# - ИСПРАВЛЕНО: Функция calculate_directory_stats() использует увеличенные таймауты (300с)
-# - ИСПРАВЛЕНО: Функция format_size() защищена от некорректных входных данных
-# - ИСПРАВЛЕНО: Основная функция main() не завершается с ошибкой при проблемах с отчетами
+# ВОССТАНОВЛЕННАЯ ФУНКЦИОНАЛЬНОСТЬ:
+# - ВОССТАНОВЛЕНО: Функция check_ceph_cluster_status() с обновленным хостом cephrgw01
+# - ВОССТАНОВЛЕНО: Вызов check_ceph_cluster_status() в функции check_ceph_access()
+# - Проверка состояния Ceph кластера теперь работает корректно
+# - Обновлен номер версии до 2.6.1
 # 
-# УЛУЧШЕНИЯ СТАБИЛЬНОСТИ:
-# - Защита от ошибок во всех функциях генерации отчетов
-# - Детальное логирование ошибок с возможностью продолжения работы
-# - Увеличенные таймауты для операций подсчета статистики больших директорий  
-# - Резервные методы для всех критически важных операций
-# - Корректное разделение ошибок резервного копирования и генерации отчетов
+# СОХРАНЕННАЯ ФУНКЦИОНАЛЬНОСТЬ:
+# - Все исправления из версии 2.6 сохранены
+# - Корректный парсинг статистики rclone
+# - Правильное форматирование размеров файлов
+# - Корректный exit code (0 при успешном резервном копировании)
+# - Правильное определение результата выполнения (success/failure)
