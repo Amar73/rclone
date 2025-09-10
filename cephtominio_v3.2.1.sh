@@ -19,8 +19,8 @@
 #  - Структура назначения: minio:<sourceRemote>/<sourceBucket>/... (bucket-папка по remote, внутри — prefix)
 #
 # Быстрый старт:
-#   env DRY_RUN=true ./cephtominio_v3.2_fixed.sh --validate=counts
-#   ./cephtominio_v3.2_fixed.sh --op=sync --parallel=4
+#   env DRY_RUN=true ./cephtominio_v3.2.1.sh --validate=counts
+#   ./cephtominio_v3.2.1.sh --op=sync --parallel=4
 #
 # Требования: rclone >= 1.60, flock(1), awk, date, xargs (BSD с поддержкой -P)
 #
@@ -29,6 +29,7 @@
 # - ИСПРАВЛЕНО: Экспорт переменных для параллельных процессов
 # - ИСПРАВЛЕНО: Обработка ошибок в process_bucket()
 # - ИСПРАВЛЕНО: Валидация и статус-файл
+# - ВОССТАНОВЛЕНО: Проверка состояния Ceph кластера через SSH
 # - ДОБАВЛЕНО: Улучшенное логирование ошибок
 #
 # =================================================================================================
@@ -92,9 +93,9 @@ readonly REQUIRED_RCLONE_VERSION="1.60"
 : "${RCLONE_S3_CHUNK_SIZE:=64M}"           # если очень крупные объекты — увеличивай
 : "${RCLONE_S3_INSECURE:=false}"           # true -> добавим --no-check-certificate (не рекомендуется)
 
-# Мягкая проверка кластера Ceph (опционально)
-: "${CEPH_STATUS_SSH_HOST:=}"              # пример: cephrgw01
-: "${CEPH_STATUS_SSH_CMD:=podman exec ceph-mon-cephrgw01 ceph status}"
+# ВОССТАНОВЛЕНО: Проверка кластера Ceph через SSH
+: "${CEPH_STATUS_SSH_HOST:=svc02}"         # хост для проверки Ceph
+: "${CEPH_STATUS_SSH_CMD:=podman exec ceph-mon-svc02 ceph status}"
 
 # «Корень» для версий удалённых/перезаписанных объектов
 : "${DELETE_BACKUP_ROOT:=minio:backup-deleted}"
@@ -344,19 +345,17 @@ check_all_remotes() {
 }
 
 # -------------------------------------------
-# 10) Опциональная проверка статуса Ceph
+# 10) ВОССТАНОВЛЕНА проверка статуса Ceph
 # -------------------------------------------
 check_ceph_status_soft() {
-  [[ -n "$CEPH_STATUS_SSH_HOST" ]] || { log DEBUG "CEPH_STATUS_SSH_HOST пуст — пропуск"; return 0; }
-  
   if command -v ssh >/dev/null 2>&1; then
     if ssh -o ConnectTimeout=5 -o BatchMode=yes "$CEPH_STATUS_SSH_HOST" "$CEPH_STATUS_SSH_CMD" >/dev/null 2>&1; then
-      log INFO "Ceph статус: OK (soft-check)"
+      log INFO "Ceph-кластер в порядке"
     else
-      log WARNING "Не удалось получить статус Ceph (soft-check)"
+      log WARNING "Проблемы с состоянием Ceph-кластера"
     fi
   else
-    log DEBUG "ssh недоступен — пропуск"
+    log WARNING "Команда ssh недоступна, пропускаем проверку состояния Ceph"
   fi
 }
 
@@ -581,7 +580,7 @@ cleanup_deleted_retention() {
   )
   [[ "$DRY_RUN" == "true" ]] && rmd_cmd+=(--dry-run)
   
-  # ISПРАВЛЕНО: Правильный вызов retry_rclone без "--"
+  # ИСПРАВЛЕНО: Правильный вызов retry_rclone без "--"
   retry_rclone 3 10 "${rmd_cmd[@]}" || log WARNING "rmdirs завершился с предупреждениями"
 }
 
@@ -595,6 +594,7 @@ generate_summary() {
     echo " Время: $(date)     DRY_RUN: $DRY_RUN"
     echo " Операция: $OPERATION     Параллелизм: $PARALLEL"
     echo " Конфиг rclone: $RCLONE_CONFIG"
+    echo " Проверка Ceph: $CEPH_STATUS_SSH_HOST ($CEPH_STATUS_SSH_CMD)"
     echo "================================================================================"
     printf "%-45s | %-6s | %s\n" "BUCKET" "STATE" "NOTE"
     echo "--------------------------------------------------------------------------------"
@@ -625,10 +625,12 @@ Usage: $SCRIPT_NAME [options]
   --validate=none|counts   Валидация результата (по умолчанию: $VALIDATE_MODE)
   --buckets-file=FILE      Файл со списком "remote:bucket" (по одному в строке)
   --buckets="r1:b1 r2:b2"  Передать список бакетов через CLI (перекрывает файл)
+  --ceph-host=HOST         Хост для проверки Ceph (по умолчанию: $CEPH_STATUS_SSH_HOST)
   --help                   Эта справка
 
 ENV можно использовать вместо/вместе с CLI:
-  RCLONE_CONFIG, PARALLEL, OPERATION, DRY_RUN, VALIDATE_MODE, BUCKETS_FILE, BUCKETS_ENV, ...
+  RCLONE_CONFIG, PARALLEL, OPERATION, DRY_RUN, VALIDATE_MODE, BUCKETS_FILE, BUCKETS_ENV
+  CEPH_STATUS_SSH_HOST, CEPH_STATUS_SSH_CMD
 
 Примеры:
   # Тестовый запуск
@@ -639,6 +641,9 @@ ENV можно использовать вместо/вместе с CLI:
   
   # Копирование конкретных бакетов
   $SCRIPT_NAME --buckets="test:bucket1 registry:bucket2"
+  
+  # С другим хостом для проверки Ceph
+  $SCRIPT_NAME --ceph-host=cephrgw01
 EOF
 }
 
@@ -653,6 +658,7 @@ parse_cli() {
       --validate=*)    VALIDATE_MODE="${arg#*=}" ;;
       --buckets-file=*)BUCKETS_FILE="${arg#*=}" ;;
       --buckets=*)     BUCKETS_ENV="${arg#*=}" ;;
+      --ceph-host=*)   CEPH_STATUS_SSH_HOST="${arg#*=}" ;;
       --help|-h)       print_help; exit 0 ;;
       *)               die "Неизвестная опция: $arg (см. --help)" ;;
     esac
@@ -675,10 +681,11 @@ main() {
   log INFO "Хост: $(hostname -f 2>/dev/null || hostname), Пользователь: $(whoami)"
   log INFO "OPERATION=$OPERATION PARALLEL=$PARALLEL DRY_RUN=$DRY_RUN VALIDATE_MODE=$VALIDATE_MODE"
   log INFO "RCLONE: transfers=$RCLONE_TRANSFERS checkers=$RCLONE_CHECKERS retries=$RCLONE_RETRIES"
+  log INFO "CEPH_CHECK: host=$CEPH_STATUS_SSH_HOST cmd='$CEPH_STATUS_SSH_CMD'"
   
   load_buckets
   check_all_remotes
-  check_ceph_status_soft
+  check_ceph_status_soft  # ВОССТАНОВЛЕНО: Активная проверка Ceph
   
   # Гарантируем корневой бакет backup-deleted
   create_bucket_if_absent "minio" "${DELETE_BACKUP_ROOT#minio:}" || true
