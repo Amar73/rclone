@@ -35,7 +35,7 @@
 # =================================================================================================
 
 # -------------------------------------------
-# 1) Жёсткий режим и базовая гигиена окружения
+# 1) Жёсткий режим и базовая настройка окружения
 # -------------------------------------------
 set -eEuo pipefail
 IFS=$'\n\t'
@@ -72,7 +72,7 @@ readonly REQUIRED_RCLONE_VERSION="1.60"
 # DRY_RUN=true для теста без изменений
 : "${DRY_RUN:=false}"
 
-# Ретеншен (дней) для backup-deleted
+# Срок хранения (дней) для backup-deleted
 : "${DELETE_RETENTION_DAYS:=30}"
 
 # Валидация результата: none|counts
@@ -93,7 +93,7 @@ readonly REQUIRED_RCLONE_VERSION="1.60"
 : "${RCLONE_S3_CHUNK_SIZE:=64M}"           # если очень крупные объекты — увеличивай
 : "${RCLONE_S3_INSECURE:=false}"           # true -> добавим --no-check-certificate (не рекомендуется)
 
-# ВОССТАНОВЛЕНО: Проверка кластера Ceph через SSH
+# Проверка кластера Ceph через SSH
 : "${CEPH_STATUS_SSH_HOST:=svc02}"         # хост для проверки Ceph
 : "${CEPH_STATUS_SSH_CMD:=podman exec ceph-mon-svc02 ceph status}"
 
@@ -133,7 +133,7 @@ DEFAULT_BUCKETS=(
 )
 
 # -------------------------------------------
-# 4) Глобальные переменные рантайма (после init)
+# 4) Глобальные переменные execution environment (после init)
 # -------------------------------------------
 RUN_TS=""
 LOGFILE=""
@@ -345,7 +345,7 @@ check_all_remotes() {
 }
 
 # -------------------------------------------
-# 10) ВОССТАНОВЛЕНА проверка статуса Ceph
+# 10) Проверка статуса Ceph
 # -------------------------------------------
 check_ceph_status_soft() {
   if command -v ssh >/dev/null 2>&1; then
@@ -371,10 +371,9 @@ create_bucket_if_absent() {
 }
 
 # -------------------------------------------
-# 12) ИСПРАВЛЕННАЯ обёртка повторных попыток с разбором вывода rclone
+# 12) Обёртка повторных попыток с разбором вывода rclone
 # -------------------------------------------
 retry_rclone() {
-  # ИСПРАВЛЕНО: Убран некорректный разделитель "--"
   # Использование: retry_rclone <retries> <sleep> rclone ...args...
   local retries="$1" sleep_s="$2"; shift 2 || true
   local -a cmd=( "$@" )
@@ -449,16 +448,16 @@ validate_pair_counts() {
 }
 
 # -------------------------------------------
-# 14) ИСПРАВЛЕННАЯ обработка одного бакета
+# 14) Обработка одного бакета
 # -------------------------------------------
 
-# ИСПРАВЛЕНО: Потокобезопасная запись статуса
+# Потокобезопасная запись статуса
 append_status() {
   # Потокобезопасная запись строки статуса в TSV
   # usage: append_status "<remote:bucket>" "<OK|FAIL>" "<msg>"
   local b="$1" st="$2" msg="${3:-}"
   
-  # ИСПРАВЛЕНО: Правильная блокировка файла
+  # Правильная блокировка файла
   {
     flock -x 200
     printf '%s\t%s\t%s\n' "$b" "$st" "$msg" >>"$STATUS_FILE"
@@ -468,7 +467,7 @@ append_status() {
 process_bucket() {
   local spec="$1"  # "remote:bucket"
   
-  # ИСПРАВЛЕНО: Улучшенная проверка формата
+  # Улучшенная проверка формата
   if [[ "$spec" != *:* ]]; then
     log ERROR "Некорректный spec: '$spec'"
     append_status "$spec" "FAIL" "bad_spec"
@@ -489,7 +488,7 @@ process_bucket() {
   
   log INFO "=== Начало: $spec ➜ $dst"
   
-  # ИСПРАВЛЕНО: Безопасное создание бакетов с обработкой ошибок
+  # Безопасное создание бакетов с обработкой ошибок
   set +e
   create_bucket_if_absent "minio" "$dst_bucket" 2>/dev/null
   create_bucket_if_absent "minio" "${DELETE_BACKUP_ROOT#minio:}" 2>/dev/null
@@ -525,7 +524,7 @@ process_bucket() {
   # В режиме copy удалений нет (backup-dir используется только для перезаписей).
   local -a cmd=( rclone "$OPERATION" "${flags[@]}" "$src" "$dst" )
   
-  # ИСПРАВЛЕНО: Правильный вызов retry_rclone без "--"
+  # Правильный вызов retry_rclone без "--"
   if retry_rclone 3 15 "${cmd[@]}"; then
     # Валидация
     if validate_pair_counts "$src" "$dst"; then
@@ -544,7 +543,7 @@ process_bucket() {
   fi
 }
 
-# ИСПРАВЛЕНО: Экспорт всех необходимых функций и переменных
+# Экспорт всех необходимых функций и переменных
 export -f log die cmd_str retry_rclone validate_pair_counts count_files create_bucket_if_absent append_status process_bucket
 export RCLONE_CONFIG RCLONE_JSONLOG RCLONE_LOG_LEVEL RCLONE_BUFFER_SIZE RCLONE_USE_MMAP
 export RCLONE_TRANSFERS RCLONE_CHECKERS RCLONE_RETRIES RCLONE_RETRIES_SLEEP RCLONE_STATS_INTERVAL
@@ -552,7 +551,7 @@ export RCLONE_S3_UPLOAD_CONCURRENCY RCLONE_S3_CHUNK_SIZE RCLONE_S3_INSECURE
 export DELETE_BACKUP_ROOT DRY_RUN OPERATION VALIDATE_MODE STATUS_FILE
 
 # -------------------------------------------
-# 15) ИСПРАВЛЕННАЯ очистка устаревших версий (backup-deleted)
+# 15) Очистка устаревших версий (backup-deleted)
 # -------------------------------------------
 cleanup_deleted_retention() {
   log INFO "Очистка backup-deleted (старше ${DELETE_RETENTION_DAYS}d): $DELETE_BACKUP_ROOT"
@@ -567,7 +566,7 @@ cleanup_deleted_retention() {
   )
   [[ "$DRY_RUN" == "true" ]] && del_cmd+=(--dry-run)
   
-  # ИСПРАВЛЕНО: Правильный вызов retry_rclone без "--"
+  # Правильный вызов retry_rclone без "--"
   retry_rclone 3 10 "${del_cmd[@]}" || log WARNING "delete завершился с предупреждениями"
   
   local -a rmd_cmd=(
@@ -580,7 +579,7 @@ cleanup_deleted_retention() {
   )
   [[ "$DRY_RUN" == "true" ]] && rmd_cmd+=(--dry-run)
   
-  # ИСПРАВЛЕНО: Правильный вызов retry_rclone без "--"
+  # Правильный вызов retry_rclone без "--"
   retry_rclone 3 10 "${rmd_cmd[@]}" || log WARNING "rmdirs завершился с предупреждениями"
 }
 
@@ -685,14 +684,14 @@ main() {
   
   load_buckets
   check_all_remotes
-  check_ceph_status_soft  # ВОССТАНОВЛЕНО: Активная проверка Ceph
+  check_ceph_status_soft  # Активная проверка Ceph
   
   # Гарантируем корневой бакет backup-deleted
   create_bucket_if_absent "minio" "${DELETE_BACKUP_ROOT#minio:}" || true
   
   log INFO "Запуск параллельной синхронизации (${#BUCKETS[@]} шт., -P $PARALLEL)"
   
-  # ИСПРАВЛЕНО: Улучшенное выполнение с обработкой ошибок
+  # Улучшенное выполнение с обработкой ошибок
   set +e
   printf '%s\0' "${BUCKETS[@]}" | xargs -0 -n1 -P"$PARALLEL" -I{} bash -c 'process_bucket "$1"' _ {}
   local xrc=$?
