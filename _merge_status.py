@@ -2,15 +2,34 @@
 """Читает разметка '---HOST:x---'/JSON/'---END:x---' из stdin,
 сливает с state_file (сохраняя историю и stale-статус), пишет out_file."""
 import json
+import os
 import sys
+
+
+def atomic_write_json(path, data):
+    """Write JSON to path atomically: write to a same-directory temp file,
+    then os.replace() it into place. Only replaces the real file after the
+    write fully succeeds, so a kill mid-write (reboot, OOM, systemd timer
+    teardown) can never leave a truncated file at `path`."""
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp_path, path)
+
 
 state_file, out_file = sys.argv[1], sys.argv[2]
 
 lines = sys.stdin.read().splitlines()
 now = lines[0] if lines else None
 
-with open(state_file) as f:
-    state = json.load(f)
+try:
+    with open(state_file) as f:
+        state = json.load(f)
+except (OSError, json.JSONDecodeError, ValueError):
+    # Missing, empty, truncated, or otherwise corrupt state file: degrade to
+    # "no prior history for any host" rather than crashing the collector.
+    # State gets rebuilt from scratch as hosts report in.
+    state = {}
 
 i = 1
 current_host = None
@@ -74,8 +93,5 @@ while i < len(lines):
         buf.append(line)
     i += 1
 
-with open(state_file, "w") as f:
-    json.dump(state, f, indent=2)
-
-with open(out_file, "w") as f:
-    json.dump({"generated_at": now, "hosts": state}, f, indent=2)
+atomic_write_json(state_file, state)
+atomic_write_json(out_file, {"generated_at": now, "hosts": state})

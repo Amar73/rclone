@@ -23,15 +23,30 @@ GENERATED_AT=$(date -Iseconds)
 LATEST_SUMMARY=$(ls -t "$LOG_DIR"/*.summary.json 2>/dev/null | head -1)
 if [[ -n "$LATEST_SUMMARY" ]]; then
   LAST_SUCCESS_JSON=$(python3 - "$LATEST_SUMMARY" <<'PYEOF'
-import json, sys
+import json, subprocess, sys
 
 path = sys.argv[1]
 try:
     with open(path) as f:
         d = json.load(f)
     stats = d.get('statistics', {})
+    finished_at = d.get('timestamp')
+    if finished_at:
+        # Normalize to the same colon-offset ISO-8601 form the rest of this
+        # script uses (date -Iseconds), same as last_mds_incident below --
+        # the summary JSON's own 'timestamp' field uses a non-colon offset
+        # (e.g. +0300) that not every JS Date parser accepts.
+        try:
+            normalized = subprocess.run(
+                ['date', '-d', finished_at, '-Iseconds'],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            if normalized:
+                finished_at = normalized
+        except Exception:
+            pass
     print(json.dumps({
-        'finished_at': d.get('timestamp'),
+        'finished_at': finished_at,
         'result': d.get('result'),
         'files_copied': stats.get('transfers', 0),
         'files_deleted': stats.get('deletes', 0),

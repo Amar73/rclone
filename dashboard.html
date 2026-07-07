@@ -68,7 +68,12 @@ function humanAgo(iso) {
 }
 
 function statusFor(hostData) {
-  if (hostData.stale) return "yellow";
+  if (hostData.stale) {
+    const lastSuccess = hostData.last_success;
+    const staleHours = lastSuccess ? hoursSince(lastSuccess.finished_at) : Infinity;
+    if (staleHours > CRIT_HOURS) return "red";
+    return "yellow";
+  }
   const ceph = hostData.ceph || {};
   if (ceph.accessible === false) return "red";
   const ls = hostData.last_success;
