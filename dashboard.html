@@ -38,6 +38,7 @@
   .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
   .dot.green { background: #3ecf6d; }
   .dot.red { background: #e5484d; }
+  .dot.grey { background: #6b7280; }
   .history { display: flex; gap: 3px; margin-top: 12px; }
   .history .cell { width: 14px; height: 14px; border-radius: 3px; }
   .stale-note { font-size: 0.85rem; color: #e0b34c; margin-top: 10px; }
@@ -104,8 +105,10 @@ function renderCard(host, data) {
     </div>`;
   }
 
-  const cephDot = ceph.accessible ? "green" : "red";
-  html += `<div class="ceph-line"><span class="dot ${cephDot}"></span> Ceph: ${ceph.accessible ? 'доступен' : 'НЕДОСТУПЕН'}`;
+  const cephUnknown = data.ceph === undefined || data.ceph === null;
+  const cephDot = cephUnknown ? "grey" : (ceph.accessible ? "green" : "red");
+  const cephText = cephUnknown ? "нет данных" : (ceph.accessible ? "доступен" : "НЕДОСТУПЕН");
+  html += `<div class="ceph-line"><span class="dot ${cephDot}"></span> Ceph: ${cephText}`;
   if (ceph.last_mds_incident) {
     html += ` <span style="color:#6b7280">(последний сбой: ${humanAgo(ceph.last_mds_incident)})</span>`;
   }
