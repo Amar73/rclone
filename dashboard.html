@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Мониторинг бэкапов</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: #0f1115;
+    color: #e6e6e6;
+    margin: 0;
+    padding: 24px;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 20px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 16px;
+  }
+  .card {
+    background: #1a1d24;
+    border-radius: 10px;
+    padding: 18px;
+    border: 1px solid #2a2e37;
+  }
+  .card.stale { opacity: 0.55; border-style: dashed; }
+  .card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .badge { font-size: 1.4rem; }
+  .host-name { font-size: 1.1rem; font-weight: 600; }
+  .row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 0.92rem; color: #b8bcc4; }
+  .row b { color: #e6e6e6; font-weight: 500; }
+  .progress-wrap { margin-top: 10px; }
+  .progress-bar-bg { background: #2a2e37; border-radius: 6px; height: 10px; overflow: hidden; }
+  .progress-bar-fill { background: #4c8bf5; height: 100%; transition: width 0.5s; }
+  .ceph-line { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 0.9rem; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+  .dot.green { background: #3ecf6d; }
+  .dot.red { background: #e5484d; }
+  .history { display: flex; gap: 3px; margin-top: 12px; }
+  .history .cell { width: 14px; height: 14px; border-radius: 3px; }
+  .stale-note { font-size: 0.85rem; color: #e0b34c; margin-top: 10px; }
+  .updated-at { color: #6b7280; font-size: 0.8rem; margin-top: 24px; }
+</style>
+</head>
+<body>
+  <h1>Мониторинг резервного копирования — arch03 / arch04 / arch05</h1>
+  <div class="grid" id="grid"></div>
+  <div class="updated-at" id="updated-at">Загрузка…</div>
+
+<script>
+const WARN_HOURS = 30;
+const CRIT_HOURS = 48;
+
+function hoursSince(iso) {
+  if (!iso) return Infinity;
+  return (Date.now() - new Date(iso).getTime()) / 3600000;
+}
+
+function humanAgo(iso) {
+  if (!iso) return "нет данных";
+  const h = hoursSince(iso);
+  if (h < 1) return Math.max(1, Math.round(h * 60)) + " мин назад";
+  if (h < 48) return Math.round(h) + " ч назад";
+  return Math.round(h / 24) + " дн назад";
+}
+
+function statusFor(hostData) {
+  if (hostData.stale) return "yellow";
+  const ceph = hostData.ceph || {};
+  if (ceph.accessible === false) return "red";
+  const ls = hostData.last_success;
+  const h = ls ? hoursSince(ls.finished_at) : Infinity;
+  if (h > CRIT_HOURS) return "red";
+  if (h > WARN_HOURS) return "yellow";
+  if (ls && ls.errors > 0) return "yellow";
+  return "green";
+}
+
+function badgeFor(status) {
+  return { green: "✅", yellow: "⚠️", red: "❌" }[status];
+}
+
+function renderCard(host, data) {
+  const status = statusFor(data);
+  const ls = data.last_success;
+  const running = data.running_now || {};
+  const ceph = data.ceph || {};
+
+  let html = `<div class="card ${data.stale ? 'stale' : ''}">`;
+  html += `<div class="card-header"><span class="badge">${badgeFor(status)}</span><span class="host-name">${host}</span></div>`;
+
+  html += `<div class="row"><span>Последний успешный бэкап</span><b>${ls ? humanAgo(ls.finished_at) : 'нет данных'}</b></div>`;
+  if (ls) {
+    html += `<div class="row"><span>Скопировано / удалено файлов</span><b>${ls.files_copied} / ${ls.files_deleted}</b></div>`;
+    html += `<div class="row"><span>Ошибок</span><b>${ls.errors}</b></div>`;
+  }
+
+  if (running.active) {
+    html += `<div class="progress-wrap">
+      <div class="row"><span>Идёт прогон сейчас</span><b>${running.percent}% (${running.checks_done} / ${running.checks_total})</b></div>
+      <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:${running.percent}%"></div></div>
+    </div>`;
+  }
+
+  const cephDot = ceph.accessible ? "green" : "red";
+  html += `<div class="ceph-line"><span class="dot ${cephDot}"></span> Ceph: ${ceph.accessible ? 'доступен' : 'НЕДОСТУПЕН'}`;
+  if (ceph.last_mds_incident) {
+    html += ` <span style="color:#6b7280">(последний сбой: ${humanAgo(ceph.last_mds_incident)})</span>`;
+  }
+  html += `</div>`;
+
+  const history = data.history || [];
+  if (history.length) {
+    html += `<div class="history">`;
+    for (const h of history) {
+      const ok = h.result === "success" && (h.errors || 0) === 0;
+      html += `<span class="cell" style="background:${ok ? '#3ecf6d' : '#e5484d'}" title="${h.finished_at}"></span>`;
+    }
+    html += `</div>`;
+  }
+
+  if (data.stale) {
+    html += `<div class="stale-note">Нет свежих данных с ${data.last_seen ? humanAgo(data.last_seen) : 'неизвестно'}</div>`;
+  }
+
+  html += `</div>`;
+  return html;
+}
+
+async function refresh() {
+  try {
+    const res = await fetch('status.json?_=' + Date.now());
+    const data = await res.json();
+    const grid = document.getElementById('grid');
+    grid.innerHTML = Object.entries(data.hosts)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([host, hostData]) => renderCard(host, hostData))
+      .join('');
+    document.getElementById('updated-at').textContent =
+      'Обновлено: ' + new Date(data.generated_at).toLocaleString('ru-RU');
+  } catch (e) {
+    document.getElementById('updated-at').textContent = 'Ошибка загрузки status.json: ' + e;
+  }
+}
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>
