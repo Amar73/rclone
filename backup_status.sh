@@ -47,7 +47,8 @@ else
 fi
 
 # --- running_now: активен ли сервис бэкапа, и насколько далеко продвинулся ---
-SERVICE_STATE=$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || echo "unknown")
+SERVICE_STATE=$(systemctl is-active "$SERVICE_NAME" 2>/dev/null)
+SERVICE_STATE=${SERVICE_STATE:-unknown}
 CHECKS_DONE=0
 CHECKS_TOTAL=0
 PERCENT=0
