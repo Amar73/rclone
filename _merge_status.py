@@ -23,8 +23,25 @@ while i < len(lines):
     elif line.startswith("---END:") and line.endswith("---"):
         raw = "\n".join(buf).strip()
         prev = state.get(current_host, {})
+
+        # A payload is only accepted as a real backup_status.sh status if it
+        # parses to a dict, carries the "host" key that backup_status.sh
+        # always includes in its final JSON assembly, and does not carry an
+        # "error" key (the shape emitted by backup_status.sh --print when the
+        # remote status file is missing, e.g. {"error":"status file not
+        # found"}). Anything else -- JSON parse failure, non-dict JSON, or
+        # this error shape -- is treated identically: preserve whatever
+        # previous state we have and mark the host stale, rather than
+        # silently overwriting last-known-good data.
+        data = None
         try:
-            data = json.loads(raw)
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict) and "host" in parsed and "error" not in parsed:
+                data = parsed
+        except (json.JSONDecodeError, TypeError):
+            data = None
+
+        if data is not None:
             data["stale"] = False
             data["last_seen"] = now
 
@@ -44,7 +61,7 @@ while i < len(lines):
             data["history"] = history
 
             state[current_host] = data
-        except (json.JSONDecodeError, TypeError):
+        else:
             if current_host in state:
                 state[current_host]["stale"] = True
             else:

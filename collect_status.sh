@@ -19,7 +19,7 @@ NOW=$(date -Iseconds)
 
 fetch_one() {
   local host="$1"
-  ssh -F "$SSH_CONFIG" -o BatchMode=yes -o ControlMaster=no -o ControlPath=none "${host}-mon" 2>/dev/null
+  timeout 15 ssh -F "$SSH_CONFIG" -o BatchMode=yes -o ConnectTimeout=8 -o ControlMaster=no -o ControlPath=none "${host}-mon" 2>/dev/null
 }
 
 {
