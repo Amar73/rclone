@@ -3,7 +3,7 @@ Description=Backup monitoring dashboard HTTP server
 
 [Service]
 WorkingDirectory=%h/backup-monitor/www
-ExecStart=/usr/bin/python3 -m http.server 8077 --bind 127.0.0.1
+ExecStart=/usr/bin/python3 -m http.server 8077 --bind 172.20.10.161
 Restart=always
 RestartSec=5
 
