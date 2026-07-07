@@ -22,10 +22,12 @@ GENERATED_AT=$(date -Iseconds)
 # --- last_success: разбираем самый свежий *.summary.json ---
 LATEST_SUMMARY=$(ls -t "$LOG_DIR"/*.summary.json 2>/dev/null | head -1)
 if [[ -n "$LATEST_SUMMARY" ]]; then
-  LAST_SUCCESS_JSON=$(python3 -c "
-import json
+  LAST_SUCCESS_JSON=$(python3 - "$LATEST_SUMMARY" <<'PYEOF'
+import json, sys
+
+path = sys.argv[1]
 try:
-    with open('$LATEST_SUMMARY') as f:
+    with open(path) as f:
         d = json.load(f)
     stats = d.get('statistics', {})
     print(json.dumps({
@@ -38,7 +40,8 @@ try:
     }))
 except Exception as e:
     print(json.dumps({'error': str(e)}))
-")
+PYEOF
+)
 else
   LAST_SUCCESS_JSON='null'
 fi
@@ -89,9 +92,10 @@ DISK_AVAIL=${DISK_AVAIL:-"?"}
 RUNNING_ACTIVE=false
 [[ "$SERVICE_STATE" == "active" || "$SERVICE_STATE" == "activating" ]] && RUNNING_ACTIVE=true
 
+STATUS_TMP="$STATUS_FILE.tmp.$$"
 python3 - "$HOST" "$GENERATED_AT" "$LAST_SUCCESS_JSON" "$RUNNING_ACTIVE" "$STARTED_AT" \
   "$CHECKS_DONE" "$CHECKS_TOTAL" "$PERCENT" "$CEPH_MOUNTED" "$CEPH_ACCESSIBLE" \
-  "$LAST_MDS_INCIDENT" "$DISK_USED_PERCENT" "$DISK_AVAIL" > "$STATUS_FILE" <<'PYEOF'
+  "$LAST_MDS_INCIDENT" "$DISK_USED_PERCENT" "$DISK_AVAIL" > "$STATUS_TMP" <<'PYEOF'
 import json, sys
 
 (host, generated_at, last_success_json, running_active, started_at,
@@ -126,3 +130,12 @@ data = {
 }
 print(json.dumps(data, indent=2))
 PYEOF
+PY_EXIT=$?
+
+if [[ $PY_EXIT -eq 0 ]]; then
+  mv "$STATUS_TMP" "$STATUS_FILE"
+else
+  echo "backup_status.sh: python3 status generation failed (exit $PY_EXIT); leaving previous $STATUS_FILE untouched" >&2
+  rm -f "$STATUS_TMP"
+  exit 1
+fi
