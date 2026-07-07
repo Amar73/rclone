@@ -65,8 +65,13 @@ if [[ "$SERVICE_STATE" == "active" || "$SERVICE_STATE" == "activating" ]]; then
   if [[ "$CHECKS_TOTAL" -gt 0 ]]; then
     PERCENT=$(( CHECKS_DONE * 100 / CHECKS_TOTAL ))
   fi
-  STARTED_AT_RAW=$(systemctl show "$SERVICE_NAME" -p ActiveEnterTimestamp --value 2>/dev/null)
-  STARTED_AT=$(date -d "$STARTED_AT_RAW" -Iseconds 2>/dev/null || echo "null")
+  STARTED_AT_RAW=$(systemctl show "$SERVICE_NAME" -p ExecMainStartTimestamp 2>/dev/null)
+  STARTED_AT_RAW="${STARTED_AT_RAW#ExecMainStartTimestamp=}"
+  if [[ -n "$STARTED_AT_RAW" ]]; then
+    STARTED_AT=$(date -d "$STARTED_AT_RAW" -Iseconds 2>/dev/null || echo "null")
+  else
+    STARTED_AT="null"
+  fi
 fi
 
 # --- ceph: смонтирован ли, реально ли доступен, когда был последний сбой ---
