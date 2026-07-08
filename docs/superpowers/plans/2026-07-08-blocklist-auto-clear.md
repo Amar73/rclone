@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Design spec: `docs/superpowers/specs/2026-07-08-blocklist-auto-clear-design.md` — read this first.
-- New credential (`client.watchdog`) capability is exactly: `mon 'allow command "osd blocklist rm", allow command "osd blocklist ls"'` — no other capabilities.
+- New credential (`client.watchdog`) capability is exactly: `mon 'allow rw, allow command "osd blocklist rm", allow command "osd blocklist ls"'` — no other capabilities.
 - Credential storage on each host: `/etc/ceph/ceph.watchdog.conf` (new, correct mon IPs — do NOT touch or reuse the existing `/etc/ceph/ceph.conf`, which is stale/broken) and `/etc/ceph/ceph.watchdog.keyring`.
 - The new fallback logic activates **only** after all `CEPH_WATCHDOG_REMOUNT_ATTEMPTS` normal remount attempts have failed — the existing 5-attempt loop itself must not change.
 - Any failure in the new blocklist-clearing logic (unreachable mon, missing credential, no matching entries) must fall through to the existing `"не удалось перемонтировать /ceph после N попыток"` error path unchanged — never a new crash/exit path.
@@ -246,7 +246,7 @@ git commit -m "Add ceph_watchdog blocklist auto-clear fallback after failed remo
 
 This plan's Task 1 only adds code that *uses* `/etc/ceph/ceph.watchdog.conf` and `/etc/ceph/ceph.watchdog.keyring` — it does not and cannot create them (no host/cluster access from a subagent's sandbox). Before this feature can work live, the controller must, using the already-established access path (amar319 → wn75 → cephrgw01 → `podman exec ceph-mon-cephrgw01`):
 
-1. Create the credential: `ceph auth get-or-create client.watchdog mon 'allow command "osd blocklist rm", allow command "osd blocklist ls"'`
+1. Create the credential: `ceph auth get-or-create client.watchdog mon 'allow rw, allow command "osd blocklist rm", allow command "osd blocklist ls"'`
 2. Retrieve its keyring content and write it to `/etc/ceph/ceph.watchdog.keyring` (mode 0600, root-owned) on arch03, arch04, and arch05.
 3. Write `/etc/ceph/ceph.watchdog.conf` on each of the three hosts with the current real mon IPs (172.17.200.85, 172.17.200.86, 172.17.200.87 — confirm against `ceph -s`/`ceph mon dump` on cephrgw01 at deployment time, don't assume these stay fixed) and the cluster's `fsid`.
 4. Deploy the updated `backup/rclone_backup_unified_v4.0.0.sh` to arch03 (backup existing script first, `bash -n` check — same pattern as every previous deployment to this file this project).

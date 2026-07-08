@@ -28,7 +28,7 @@ MDS явно **вытесняет и блокирует** (`ceph osd blocklist`)
 
 ```
 ceph auth get-or-create client.watchdog \
-  mon 'allow command "osd blocklist rm", allow command "osd blocklist ls"'
+  mon 'allow rw, allow command "osd blocklist rm", allow command "osd blocklist ls"'
 ```
 
 Права — только эти две команды через mon, ничего больше (не полный admin, не файловый доступ к CephFS). Пользователь явно согласился, что технически этот credential может снять blocklist **любого** клиента кластера, не только своего — это приемлемо в рамках доверенной внутренней сети.
