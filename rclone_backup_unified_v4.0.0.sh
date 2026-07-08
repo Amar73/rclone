@@ -389,6 +389,19 @@ cleanup() {
     log INFO "Начало процедуры очистки ресурсов..."
 
     if [[ -n "${WATCHDOG_PID:-}" ]]; then
+        log DEBUG "ceph_watchdog: ожидание завершения текущего восстановления" \
+                  "перед остановкой..."
+        local wd_stop_lock_fd
+        if exec {wd_stop_lock_fd}>"$CEPH_WATCHDOG_LOCKFILE" 2>/dev/null; then
+            if ! flock -w 60 "$wd_stop_lock_fd"; then
+                log WARNING "ceph_watchdog: не дождался завершения" \
+                            "ceph_watchdog_recover за 60с, останавливаю" \
+                            "watchdog принудительно"
+            fi
+            flock -u "$wd_stop_lock_fd" 2>/dev/null || true
+            exec {wd_stop_lock_fd}>&- 2>/dev/null || true
+        fi
+
         log DEBUG "Останавливаю ceph_watchdog (PID: $WATCHDOG_PID)"
         kill "$WATCHDOG_PID" 2>/dev/null || true
         wait "$WATCHDOG_PID" 2>/dev/null || true
@@ -775,6 +788,7 @@ readonly CEPH_WATCHDOG_STAT_TIMEOUT=5
 readonly CEPH_WATCHDOG_KILL_GRACE=3
 readonly CEPH_WATCHDOG_REMOUNT_ATTEMPTS=5
 readonly CEPH_WATCHDOG_REMOUNT_SLEEP=5
+readonly CEPH_WATCHDOG_LOCKFILE="/var/lock/ceph_watchdog_recover.lock"
 
 # Возвращает 0, если /ceph реально доступен (не просто "смонтирован" —
 # именно это различие важно: mountpoint -q может быть true, пока реальный
@@ -786,6 +800,19 @@ ceph_watchdog_check() {
 # Останавливает текущие rclone-процессы и перемонтирует /ceph.
 # Возвращает 0, если после перемонтирования /ceph снова доступен.
 ceph_watchdog_recover() {
+    # Эксклюзивная блокировка на время всего восстановления: main()/cleanup()
+    # при остановке watchdog'а дожидаются её освобождения перед kill,
+    # чтобы SIGTERM не прерывал mount/sleep в середине перемонтирования
+    # (см. CEPH_WATCHDOG_LOCKFILE).
+    local recover_lock_fd
+
+    exec {recover_lock_fd}>"$CEPH_WATCHDOG_LOCKFILE" || {
+        log ERROR "ceph_watchdog: не удалось открыть файл блокировки" \
+                  "восстановления: $CEPH_WATCHDOG_LOCKFILE"
+        return 1
+    }
+    flock -x "$recover_lock_fd"
+
     log ERROR "ceph_watchdog: /ceph недоступен $CEPH_WATCHDOG_FAILURE_THRESHOLD" \
               "проверки подряд (~$(( CEPH_WATCHDOG_CHECK_INTERVAL * CEPH_WATCHDOG_FAILURE_THRESHOLD ))с)." \
               "Останавливаю текущие rclone-процессы и перемонтирую /ceph."
@@ -802,6 +829,8 @@ ceph_watchdog_recover() {
 
         if mount /ceph 2>>"$LOGFILE" && ceph_watchdog_check; then
             log INFO "ceph_watchdog: /ceph успешно перемонтирован и доступен"
+            flock -u "$recover_lock_fd"
+            exec {recover_lock_fd}>&-
             return 0
         fi
 
@@ -812,6 +841,8 @@ ceph_watchdog_recover() {
 
     log ERROR "ceph_watchdog: не удалось перемонтировать /ceph после" \
               "$CEPH_WATCHDOG_REMOUNT_ATTEMPTS попыток. Продолжаю наблюдение."
+    flock -u "$recover_lock_fd"
+    exec {recover_lock_fd}>&-
     return 1
 }
 
@@ -1576,6 +1607,19 @@ main() {
     set -e
 
     if [[ -n "$WATCHDOG_PID" ]]; then
+        log DEBUG "ceph_watchdog: ожидание завершения текущего восстановления" \
+                  "перед остановкой..."
+        local wd_stop_lock_fd
+        if exec {wd_stop_lock_fd}>"$CEPH_WATCHDOG_LOCKFILE" 2>/dev/null; then
+            if ! flock -w 60 "$wd_stop_lock_fd"; then
+                log WARNING "ceph_watchdog: не дождался завершения" \
+                            "ceph_watchdog_recover за 60с, останавливаю" \
+                            "watchdog принудительно"
+            fi
+            flock -u "$wd_stop_lock_fd" 2>/dev/null || true
+            exec {wd_stop_lock_fd}>&- 2>/dev/null || true
+        fi
+
         log DEBUG "Останавливаю ceph_watchdog (PID: $WATCHDOG_PID)"
         kill "$WATCHDOG_PID" 2>/dev/null || true
         wait "$WATCHDOG_PID" 2>/dev/null || true
