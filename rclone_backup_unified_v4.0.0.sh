@@ -393,9 +393,10 @@ cleanup() {
                   "перед остановкой..."
         local wd_stop_lock_fd
         if exec {wd_stop_lock_fd}>"$CEPH_WATCHDOG_LOCKFILE" 2>/dev/null; then
-            if ! flock -w 60 "$wd_stop_lock_fd"; then
+            if ! flock -w "$CEPH_WATCHDOG_STOP_WAIT_TIMEOUT" "$wd_stop_lock_fd"; then
                 log WARNING "ceph_watchdog: не дождался завершения" \
-                            "ceph_watchdog_recover за 60с, останавливаю" \
+                            "ceph_watchdog_recover за" \
+                            "${CEPH_WATCHDOG_STOP_WAIT_TIMEOUT}с, останавливаю" \
                             "watchdog принудительно"
             fi
             flock -u "$wd_stop_lock_fd" 2>/dev/null || true
@@ -788,7 +789,19 @@ readonly CEPH_WATCHDOG_STAT_TIMEOUT=5
 readonly CEPH_WATCHDOG_KILL_GRACE=3
 readonly CEPH_WATCHDOG_REMOUNT_ATTEMPTS=5
 readonly CEPH_WATCHDOG_REMOUNT_SLEEP=5
+readonly CEPH_WATCHDOG_UMOUNT_TIMEOUT=15
+readonly CEPH_WATCHDOG_MOUNT_TIMEOUT=15
 readonly CEPH_WATCHDOG_LOCKFILE="/var/lock/ceph_watchdog_recover.lock"
+# Сколько main()/cleanup() ждут освобождения CEPH_WATCHDOG_LOCKFILE перед
+# принудительной остановкой watchdog'а. Должно с запасом покрывать
+# ограниченный "худший случай" ceph_watchdog_recover():
+#   CEPH_WATCHDOG_KILL_GRACE
+#   + CEPH_WATCHDOG_UMOUNT_TIMEOUT
+#   + CEPH_WATCHDOG_REMOUNT_ATTEMPTS * (CEPH_WATCHDOG_MOUNT_TIMEOUT
+#                                        + CEPH_WATCHDOG_STAT_TIMEOUT
+#                                        + CEPH_WATCHDOG_REMOUNT_SLEEP)
+# При текущих значениях: 3 + 15 + 5*(15+5+5) = 143с, отсюда запас до 150с.
+readonly CEPH_WATCHDOG_STOP_WAIT_TIMEOUT=150
 
 # Возвращает 0, если /ceph реально доступен (не просто "смонтирован" —
 # именно это различие важно: mountpoint -q может быть true, пока реальный
@@ -821,13 +834,13 @@ ceph_watchdog_recover() {
     sleep "$CEPH_WATCHDOG_KILL_GRACE"
     pkill -KILL -x rclone 2>/dev/null || true
 
-    umount /ceph -fl 2>/dev/null || true
+    timeout "$CEPH_WATCHDOG_UMOUNT_TIMEOUT" umount /ceph -fl 2>/dev/null || true
 
     local attempt
     for (( attempt = 1; attempt <= CEPH_WATCHDOG_REMOUNT_ATTEMPTS; attempt++ )); do
         log INFO "ceph_watchdog: попытка перемонтирования $attempt/$CEPH_WATCHDOG_REMOUNT_ATTEMPTS"
 
-        if mount /ceph 2>>"$LOGFILE" && ceph_watchdog_check; then
+        if timeout "$CEPH_WATCHDOG_MOUNT_TIMEOUT" mount /ceph 2>>"$LOGFILE" && ceph_watchdog_check; then
             log INFO "ceph_watchdog: /ceph успешно перемонтирован и доступен"
             flock -u "$recover_lock_fd"
             exec {recover_lock_fd}>&-
@@ -1611,9 +1624,10 @@ main() {
                   "перед остановкой..."
         local wd_stop_lock_fd
         if exec {wd_stop_lock_fd}>"$CEPH_WATCHDOG_LOCKFILE" 2>/dev/null; then
-            if ! flock -w 60 "$wd_stop_lock_fd"; then
+            if ! flock -w "$CEPH_WATCHDOG_STOP_WAIT_TIMEOUT" "$wd_stop_lock_fd"; then
                 log WARNING "ceph_watchdog: не дождался завершения" \
-                            "ceph_watchdog_recover за 60с, останавливаю" \
+                            "ceph_watchdog_recover за" \
+                            "${CEPH_WATCHDOG_STOP_WAIT_TIMEOUT}с, останавливаю" \
                             "watchdog принудительно"
             fi
             flock -u "$wd_stop_lock_fd" 2>/dev/null || true
