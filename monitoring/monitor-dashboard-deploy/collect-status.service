@@ -1,0 +1,6 @@
+[Unit]
+Description=Collect backup status from arch03/04/05 into the monitoring dashboard
+
+[Service]
+Type=oneshot
+ExecStart=%h/backup-monitor/collect_status.sh

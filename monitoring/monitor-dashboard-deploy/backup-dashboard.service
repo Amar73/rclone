@@ -1,0 +1,11 @@
+[Unit]
+Description=Backup monitoring dashboard HTTP server
+
+[Service]
+WorkingDirectory=%h/backup-monitor/www
+ExecStart=/usr/bin/python3 -m http.server 8077 --bind 172.20.10.161
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,94 @@
+[root@archminio02 amar]# cat /var/log/backup-ceph-minio/backup_2026-04-26_21-09-08.log
+2026-04-26T21:09:09+03:00 [INFO] === ЗАПУСК СИНХРОНИЗАЦИИ CEPHFS ➜ MINIO S3 ===
+2026-04-26T21:09:09+03:00 [INFO] Версия скрипта: 4.0.0
+2026-04-26T21:09:09+03:00 [INFO] Пользователь: root
+2026-04-26T21:09:09+03:00 [INFO] Хост: archminio02.apps.maket.nbgi.ru
+2026-04-26T21:09:09+03:00 [INFO] PID процесса: 152248
+2026-04-26T21:09:09+03:00 [INFO] Режим DRY_RUN: false
+2026-04-26T21:09:09+03:00 [INFO] Файлы логов:
+2026-04-26T21:09:09+03:00 [INFO]   - Основной лог:    /var/log/backup-ceph-minio/backup_2026-04-26_21-09-08.log
+2026-04-26T21:09:09+03:00 [INFO]   - JSON лог rclone: /var/log/backup-ceph-minio/backup_2026-04-26_21-09-08.jsonl
+2026-04-26T21:09:09+03:00 [INFO]   - Итоговая сводка: /var/log/backup-ceph-minio/backup_2026-04-26_21-09-08.summary.txt
+2026-04-26T21:09:09+03:00 [INFO] Ротация старых логов (удаление файлов старше 30 дней)
+2026-04-26T21:09:09+03:00 [INFO] Старых лог-файлов для удаления не найдено
+2026-04-26T21:09:09+03:00 [INFO] Проверка наличия необходимых команд
+2026-04-26T21:09:09+03:00 [INFO] Все необходимые команды найдены
+2026-04-26T21:09:09+03:00 [INFO] Проверка версии rclone
+2026-04-26T21:09:09+03:00 [INFO] Версия rclone: 1.69.1 (соответствует требованиям)
+2026-04-26T21:09:09+03:00 [INFO] Проверка конфигурации rclone: /root/.config/rclone/rclone.conf
+2026-04-26T21:09:09+03:00 [INFO] Конфигурация rclone проверена успешно
+2026-04-26T21:09:09+03:00 [INFO] Валидация исходных директорий
+2026-04-26T21:09:09+03:00 [INFO] Валидация исходных директорий завершена успешно
+2026-04-26T21:09:09+03:00 [INFO] Блокировка получена успешно (дескриптор: 10)
+2026-04-26T21:09:09+03:00 [INFO] ЭТАП 2: Проверка доступности систем хранения
+2026-04-26T21:09:09+03:00 [INFO] Проверка доступности CephFS
+2026-04-26T21:09:09+03:00 [INFO] CephFS уже смонтирован
+2026-04-26T21:09:09+03:00 [INFO] Все исходные директории доступны
+2026-04-26T21:09:09+03:00 [INFO] Проверка соединения с MinIO S3: https://minio01.apps.maket.nbgi.ru:9000
+2026-04-26T21:09:09+03:00 [INFO] MinIO S3 доступен и healthy (healthcheck вернул HTTP 200)
+2026-04-26T21:09:09+03:00 [INFO] Проверка доступности rclone remote'ов
+2026-04-26T21:10:56+03:00 [ERROR] Remote 'minio:' недоступен. Сообщение rclone:
+2026-04-26T21:10:56+03:00 [ERROR]   rclone: 2026/04/26 21:10:56 ERROR : : error listing: operation error S3: ListBuckets, exceeded maximum number of attempts, 10, https response error StatusCode: 0, RequestID: , HostID: , request send failed, Get "https://minio01.apps.maket.nbgi.ru:9000/?x-id=ListBuckets": tls: failed to verify certificate: x509: certificate signed by unknown authority (possibly because of "x509: ECDSA verification failure" while trying to verify candidate authority certificate "Certgen Development")
+2026-04-26T21:10:56+03:00 [ERROR]   rclone: 2026/04/26 21:10:56 NOTICE: Failed to lsd with 2 errors: last error was: operation error S3: ListBuckets, exceeded maximum number of attempts, 10, https response error StatusCode: 0, RequestID: , HostID: , request send failed, Get "https://minio01.apps.maket.nbgi.ru:9000/?x-id=ListBuckets": tls: failed to verify certificate: x509: certificate signed by unknown authority (possibly because of "x509: ECDSA verification failure" while trying to verify candidate authority certificate "Certgen Development")
+2026-04-26T21:10:56+03:00 [ERROR] Диагностика — проверьте:
+2026-04-26T21:10:56+03:00 [ERROR]   1. Endpoint:   rclone config show minio
+2026-04-26T21:10:56+03:00 [ERROR]   2. TLS:        если self-signed — добавьте в rclone.conf: no_check_certificate = true
+2026-04-26T21:10:56+03:00 [ERROR]   3. Сеть:       curl -vk https://minio01.apps.maket.nbgi.ru:9000/minio/health/live
+2026-04-26T21:10:56+03:00 [ERROR]   4. Ключи S3:   access_key_id / secret_access_key в rclone.conf
+2026-04-26T21:10:56+03:00 [ERROR]   5. Права S3:   пользователь должен иметь ListBucket на корень remote
+2026-04-26T21:10:56+03:00 [CRITICAL] Не удалось подключиться к remote 'minio:'. Синхронизация невозможна.
+2026-04-26T21:10:56+03:00 [INFO] Начало процедуры очистки ресурсов
+2026-04-26T21:10:56+03:00 [DEBUG] Блокировка освобождена
+2026-04-26T21:10:56+03:00 [DEBUG] Файл блокировки удалён
+2026-04-26T21:10:56+03:00 [INFO] Генерация итоговой сводки (exit code: 1)
+================================================================================
+           ИТОГОВАЯ СВОДКА СИНХРОНИЗАЦИИ CEPHFS ➜ MINIO S3
+================================================================================
+
+Время завершения:          Sun Apr 26 21:10:56 MSK 2026
+Общий результат:           FAILURE
+Версия скрипта:            4.0.0
+Пользователь:              root
+Хост:                      archminio02.apps.maket.nbgi.ru
+Режим DRY_RUN:             false
+
+--------------------------------------------------------------------------------
+КОНФИГУРАЦИЯ:
+--------------------------------------------------------------------------------
+MinIO endpoint:            https://minio01.apps.maket.nbgi.ru:9000
+Основной бакет:            minio:nbiks-backup
+Бакет удалённых файлов:    minio:deleted-backup
+Retention удалений:        30 дней
+Параллельные передачи:     20
+Потоки проверки:           8
+Повторных попыток:         5
+Размер буфера:             16M
+
+--------------------------------------------------------------------------------
+РЕЗУЛЬТАТЫ:
+--------------------------------------------------------------------------------
+Директорий к обработке:    3
+Успешно синхронизировано:  0
+С ошибками:                3
+
+--------------------------------------------------------------------------------
+МАППИНГ ДИРЕКТОРИЙ:
+--------------------------------------------------------------------------------
+  /ceph/data/nbics/Reads
+    ➜ minio:nbiks-backup/nbics/Reads
+  /ceph/data/nbics/Genomes
+    ➜ minio:nbiks-backup/nbics/Genomes
+  /ceph/data/bio/nextcloud/data/data/kgs
+    ➜ minio:nbiks-backup/bio/nextcloud/data/data/kgs
+
+--------------------------------------------------------------------------------
+ФАЙЛЫ ЛОГОВ:
+--------------------------------------------------------------------------------
+Основной лог:              /var/log/backup-ceph-minio/backup_2026-04-26_21-09-08.log
+JSON лог rclone:           /var/log/backup-ceph-minio/backup_2026-04-26_21-09-08.jsonl
+Итоговая сводка:           /var/log/backup-ceph-minio/backup_2026-04-26_21-09-08.summary.txt
+
+================================================================================
+2026-04-26T21:10:56+03:00 [INFO] Итоговая сводка сохранена: /var/log/backup-ceph-minio/backup_2026-04-26_21-09-08.summary.txt
+2026-04-26T21:10:56+03:00 [ERROR] Синхронизация завершена с ошибкой (код: 1)
+2026-04-26T21:10:56+03:00 [INFO] === ЗАВЕРШЕНИЕ СИНХРОНИЗАЦИИ CEPHFS ➜ MINIO S3 ===
