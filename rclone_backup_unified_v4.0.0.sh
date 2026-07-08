@@ -791,16 +791,28 @@ readonly CEPH_WATCHDOG_REMOUNT_ATTEMPTS=5
 readonly CEPH_WATCHDOG_REMOUNT_SLEEP=5
 readonly CEPH_WATCHDOG_UMOUNT_TIMEOUT=15
 readonly CEPH_WATCHDOG_MOUNT_TIMEOUT=15
+# Грейс-период для `timeout -k` вокруг umount/mount: без -k GNU timeout
+# лишь один раз посылает SIGTERM по истечении DURATION и затем молча
+# ЖДЁТ завершения процесса — если umount/mount завис на уровне ядра
+# (недоступный CephFS), SIGTERM может быть проигнорирован/не доставлен
+# сколь угодно долго, и timeout перестаёт быть реальной границей.
+# -k гарантирует принудительный SIGKILL через это число секунд после
+# SIGTERM.
+readonly CEPH_WATCHDOG_TIMEOUT_KILL_GRACE=5
 readonly CEPH_WATCHDOG_LOCKFILE="/var/lock/ceph_watchdog_recover.lock"
 # Сколько main()/cleanup() ждут освобождения CEPH_WATCHDOG_LOCKFILE перед
 # принудительной остановкой watchdog'а. Должно с запасом покрывать
-# ограниченный "худший случай" ceph_watchdog_recover():
+# ограниченный "худший случай" ceph_watchdog_recover(). Сон между
+# попытками перемонтирования выполняется только МЕЖДУ попытками
+# (см. цикл ниже: `if (( attempt < CEPH_WATCHDOG_REMOUNT_ATTEMPTS ))`),
+# т.е. не более (CEPH_WATCHDOG_REMOUNT_ATTEMPTS - 1) раз, а не
+# CEPH_WATCHDOG_REMOUNT_ATTEMPTS раз:
 #   CEPH_WATCHDOG_KILL_GRACE
 #   + CEPH_WATCHDOG_UMOUNT_TIMEOUT
 #   + CEPH_WATCHDOG_REMOUNT_ATTEMPTS * (CEPH_WATCHDOG_MOUNT_TIMEOUT
-#                                        + CEPH_WATCHDOG_STAT_TIMEOUT
-#                                        + CEPH_WATCHDOG_REMOUNT_SLEEP)
-# При текущих значениях: 3 + 15 + 5*(15+5+5) = 143с, отсюда запас до 150с.
+#                                        + CEPH_WATCHDOG_STAT_TIMEOUT)
+#   + (CEPH_WATCHDOG_REMOUNT_ATTEMPTS - 1) * CEPH_WATCHDOG_REMOUNT_SLEEP
+# При текущих значениях: 3 + 15 + 5*(15+5) + 4*5 = 138с, отсюда запас до 150с.
 readonly CEPH_WATCHDOG_STOP_WAIT_TIMEOUT=150
 
 # Возвращает 0, если /ceph реально доступен (не просто "смонтирован" —
@@ -834,13 +846,13 @@ ceph_watchdog_recover() {
     sleep "$CEPH_WATCHDOG_KILL_GRACE"
     pkill -KILL -x rclone 2>/dev/null || true
 
-    timeout "$CEPH_WATCHDOG_UMOUNT_TIMEOUT" umount /ceph -fl 2>/dev/null || true
+    timeout -k "$CEPH_WATCHDOG_TIMEOUT_KILL_GRACE" "$CEPH_WATCHDOG_UMOUNT_TIMEOUT" umount /ceph -fl 2>/dev/null || true
 
     local attempt
     for (( attempt = 1; attempt <= CEPH_WATCHDOG_REMOUNT_ATTEMPTS; attempt++ )); do
         log INFO "ceph_watchdog: попытка перемонтирования $attempt/$CEPH_WATCHDOG_REMOUNT_ATTEMPTS"
 
-        if timeout "$CEPH_WATCHDOG_MOUNT_TIMEOUT" mount /ceph 2>>"$LOGFILE" && ceph_watchdog_check; then
+        if timeout -k "$CEPH_WATCHDOG_TIMEOUT_KILL_GRACE" "$CEPH_WATCHDOG_MOUNT_TIMEOUT" mount /ceph 2>>"$LOGFILE" && ceph_watchdog_check; then
             log INFO "ceph_watchdog: /ceph успешно перемонтирован и доступен"
             flock -u "$recover_lock_fd"
             exec {recover_lock_fd}>&-
