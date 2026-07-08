@@ -67,6 +67,15 @@ function humanAgo(iso) {
   return Math.round(h / 24) + " дн назад";
 }
 
+function humanDuration(iso) {
+  if (!iso) return "нет данных";
+  const totalHours = hoursSince(iso);
+  const days = Math.floor(totalHours / 24);
+  const hours = Math.round(totalHours % 24);
+  if (days > 0) return `${days} дн ${hours} ч`;
+  return `${hours} ч`;
+}
+
 function statusFor(hostData) {
   if (hostData.stale) {
     const lastSuccess = hostData.last_success;
@@ -118,6 +127,14 @@ function renderCard(host, data) {
     html += ` <span style="color:#6b7280">(последний сбой: ${humanAgo(ceph.last_mds_incident)})</span>`;
   }
   html += `</div>`;
+
+  const system = data.system;
+  if (system) {
+    html += `<div class="row"><span>Load average</span><b>${system.load_avg.map(v => v.toFixed(2)).join(' / ')}</b></div>`;
+    html += `<div class="row"><span>Память</span><b>${system.memory.used_gb} / ${system.memory.total_gb} ГБ (${system.memory.percent}%)</b></div>`;
+    html += `<div class="row"><span>Аптайм</span><b>${humanDuration(system.boot_at)}</b></div>`;
+    html += `<div class="row"><span>Процессы rclone</span><b>${system.rclone_processes}</b></div>`;
+  }
 
   const history = data.history || [];
   if (history.length) {
