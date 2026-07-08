@@ -110,20 +110,70 @@ DISK_AVAIL=$(echo "$DISK_LINE" | awk '{print $4}')
 DISK_USED_PERCENT=${DISK_USED_PERCENT:-0}
 DISK_AVAIL=${DISK_AVAIL:-"?"}
 
+# --- system: load average, память, аптайм, кол-во процессов rclone ---
+LOAD1=0; LOAD5=0; LOAD15=0
+LOADAVG_LINE=$(cat /proc/loadavg 2>/dev/null)
+if [[ -n "$LOADAVG_LINE" ]]; then
+  read -r LOAD1 LOAD5 LOAD15 _ < <(echo "$LOADAVG_LINE")
+fi
+
+MEM_TOTAL_KB=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)
+MEM_AVAIL_KB=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null)
+MEM_TOTAL_KB=${MEM_TOTAL_KB:-0}
+MEM_AVAIL_KB=${MEM_AVAIL_KB:-0}
+
+UPTIME_SECONDS=$(awk '{print int($1)}' /proc/uptime 2>/dev/null)
+UPTIME_SECONDS=${UPTIME_SECONDS:-0}
+
+RCLONE_PROCESSES=$(pgrep -c -x rclone 2>/dev/null)
+RCLONE_PROCESSES=${RCLONE_PROCESSES:-0}
+
+SYSTEM_JSON=$(python3 - "$LOAD1" "$LOAD5" "$LOAD15" "$MEM_TOTAL_KB" "$MEM_AVAIL_KB" \
+  "$UPTIME_SECONDS" "$RCLONE_PROCESSES" "$GENERATED_AT" <<'PYEOF'
+import json, sys
+from datetime import datetime, timedelta
+
+load1, load5, load15, total_kb, avail_kb, uptime_s, rclone_procs, generated_at = sys.argv[1:9]
+
+try:
+    total_kb = int(total_kb)
+    avail_kb = int(avail_kb)
+    if total_kb <= 0:
+        raise ValueError("MemTotal missing or zero")
+    used_gb = round((total_kb - avail_kb) / 1024 / 1024, 1)
+    total_gb = round(total_kb / 1024 / 1024, 1)
+    percent = round((total_kb - avail_kb) / total_kb * 100)
+
+    boot_dt = datetime.fromisoformat(generated_at) - timedelta(seconds=int(uptime_s))
+    boot_at = boot_dt.isoformat()
+
+    data = {
+        "load_avg": [float(load1), float(load5), float(load15)],
+        "memory": {"used_gb": used_gb, "total_gb": total_gb, "percent": percent},
+        "boot_at": boot_at,
+        "rclone_processes": int(rclone_procs),
+    }
+    print(json.dumps(data))
+except Exception:
+    print("null")
+PYEOF
+)
+
 RUNNING_ACTIVE=false
 [[ "$SERVICE_STATE" == "active" || "$SERVICE_STATE" == "activating" ]] && RUNNING_ACTIVE=true
 
 STATUS_TMP="$STATUS_FILE.tmp.$$"
 python3 - "$HOST" "$GENERATED_AT" "$LAST_SUCCESS_JSON" "$RUNNING_ACTIVE" "$STARTED_AT" \
   "$CHECKS_DONE" "$CHECKS_TOTAL" "$PERCENT" "$CEPH_MOUNTED" "$CEPH_ACCESSIBLE" \
-  "$LAST_MDS_INCIDENT" "$DISK_USED_PERCENT" "$DISK_AVAIL" > "$STATUS_TMP" <<'PYEOF'
+  "$LAST_MDS_INCIDENT" "$DISK_USED_PERCENT" "$DISK_AVAIL" "$SYSTEM_JSON" > "$STATUS_TMP" <<'PYEOF'
 import json, sys
 
 (host, generated_at, last_success_json, running_active, started_at,
  checks_done, checks_total, percent, ceph_mounted, ceph_accessible,
- last_mds, disk_pct, disk_avail) = sys.argv[1:14]
+ last_mds, disk_pct, disk_avail, system_json) = sys.argv[1:15]
 
 last_success = json.loads(last_success_json) if last_success_json != "null" else None
+system = json.loads(system_json) if system_json != "null" else None
 
 running_now = {"active": running_active == "true"}
 if running_now["active"]:
@@ -148,6 +198,7 @@ data = {
         "backup_used_percent": int(disk_pct) if disk_pct.isdigit() else None,
         "backup_avail_human": disk_avail,
     },
+    "system": system,
 }
 print(json.dumps(data, indent=2))
 PYEOF
