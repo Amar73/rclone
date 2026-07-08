@@ -1,0 +1,25 @@
+[Unit]
+Description=CephFS -> локальный бэкап (rclone_backup_unified_v4.0.0.sh)
+Documentation=file:/usr/local/bin/scripts/rclone_backup_unified_v4.0.0.sh
+Wants=network-online.target remote-fs.target
+After=network-online.target remote-fs.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/usr/local/bin/scripts/rclone_backup.env
+ExecStart=/usr/local/bin/scripts/rclone_backup_unified_v4.0.0.sh
+
+# КРИТИЧНО: полный цикл занимает 5-8 суток. Без этой строки systemd считает
+# запуск не завершившимся вовремя (по умолчанию ~90с для Type=oneshot) и
+# убивает процесс. Значение 0 отключает таймаут запуска.
+# ВАЖНО: именно "0", а не "infinity" — на systemd 219 (CentOS 7, стоит на
+# arch03/04/05) строковое значение "infinity" не соблюдается на практике
+# (systemctl show показывает его как принятое, но процесс всё равно убивается
+# почти мгновенно после старта — проверено вживую на всех трёх хостах).
+TimeoutStartSec=0
+
+# Бэкап — фоновая объёмная задача; не должен вытеснять по CPU/IO другие
+# процессы на хосте (в т.ч. сам Ceph) во время многосуточного прогона.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
