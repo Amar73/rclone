@@ -822,6 +822,16 @@ readonly CEPH_WATCHDOG_CONF="/etc/ceph/ceph.watchdog.conf"
 readonly CEPH_WATCHDOG_KEYRING="/etc/ceph/ceph.watchdog.keyring"
 readonly CEPH_WATCHDOG_BLOCKLIST_TIMEOUT=10
 
+# Хостовый бинарник ceph на arch03-05 — 15.2.7 (Octopus), на два мажорных
+# релиза старше реального кластера (17.2.7 Quincy), из-за чего auth
+# молча падает ([errno 13] RADOS permission denied) даже с рабочими
+# учётными данными. Собственный registry кластера с актуальными Quincy
+# образами недоступен из сети arch03-05, поэтому используется уже
+# закэшированный на всех трёх хостах образ Pacific — на один мажорный
+# релиз новее кластера недостаточно, но новее хостового бинарника
+# достаточно, чтобы успешно пройти handshake.
+readonly CEPH_WATCHDOG_CLI_IMAGE="registry.ceph.kiae.ru:5000/ceph/daemon:v6.0.6-stable-6.0-pacific-centos-8-x86_64"
+
 # Возвращает 0, если /ceph реально доступен (не просто "смонтирован" —
 # именно это различие важно: mountpoint -q может быть true, пока реальный
 # stat/ls виснет или даёт Permission denied).
@@ -841,7 +851,8 @@ ceph_watchdog_clear_own_blocklist() {
 
     local blocklist_entries
     blocklist_entries=$(timeout "$CEPH_WATCHDOG_BLOCKLIST_TIMEOUT" \
-        ceph -c "$CEPH_WATCHDOG_CONF" --keyring "$CEPH_WATCHDOG_KEYRING" \
+        podman run --rm --entrypoint ceph -v /etc/ceph:/etc/ceph:ro "$CEPH_WATCHDOG_CLI_IMAGE" \
+        -c "$CEPH_WATCHDOG_CONF" --keyring "$CEPH_WATCHDOG_KEYRING" --id watchdog \
         osd blocklist ls 2>/dev/null | awk '{print $1}')
 
     if [[ -z "$own_ips" || -z "$blocklist_entries" ]]; then
@@ -858,7 +869,8 @@ ceph_watchdog_clear_own_blocklist() {
                 log INFO "ceph_watchdog: найдена собственная запись в blocklist:" \
                           "$entry. Снимаю блокировку."
                 if timeout "$CEPH_WATCHDOG_BLOCKLIST_TIMEOUT" \
-                    ceph -c "$CEPH_WATCHDOG_CONF" --keyring "$CEPH_WATCHDOG_KEYRING" \
+                    podman run --rm --entrypoint ceph -v /etc/ceph:/etc/ceph:ro "$CEPH_WATCHDOG_CLI_IMAGE" \
+                    -c "$CEPH_WATCHDOG_CONF" --keyring "$CEPH_WATCHDOG_KEYRING" --id watchdog \
                     osd blocklist rm "$entry" >/dev/null 2>&1; then
                     cleared=true
                 fi
