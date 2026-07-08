@@ -1112,6 +1112,7 @@ parse_rclone_stats() {
     local totalBytes=0 bytes=0 elapsedTime=0 speed=0
 
     set +e
+    set +o pipefail
 
     local stats_data
     if stats_data=$(jq -c 'select(.stats != null) | .stats' \
@@ -1128,6 +1129,7 @@ parse_rclone_stats() {
         fi
     fi
 
+    set -o pipefail
     set -e
 
     [[ "$transfers"   =~ ^[0-9]+$   ]] || transfers=0
@@ -1217,6 +1219,7 @@ calculate_directory_stats() {
     local file_count=0 total_size=0
 
     set +e
+    set +o pipefail
 
     if file_count=$(timeout "$DIR_STATS_TIMEOUT" rclone lsf "${lsf_args[@]}" "$path" \
                     2>/dev/null | wc -l); then
@@ -1232,6 +1235,7 @@ calculate_directory_stats() {
         total_size=0
     fi
 
+    set -o pipefail
     set -e
 
     echo "$file_count $total_size"
