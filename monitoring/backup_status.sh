@@ -125,32 +125,38 @@ MEM_AVAIL_KB=${MEM_AVAIL_KB:-0}
 UPTIME_SECONDS=$(awk '{print int($1)}' /proc/uptime 2>/dev/null)
 UPTIME_SECONDS=${UPTIME_SECONDS:-0}
 
+# boot_at is computed here via `date`, not inside the python heredoc below --
+# python's date-parsing stdlib helper for ISO-8601 strings isn't available
+# until Python 3.7, and even then it can't parse the colon-less UTC offset
+# (e.g. +0300) that `date -Iseconds` produces on these hosts until Python
+# 3.11. Same idiom as last_success/last_mds_incident above: let `date` do the
+# date arithmetic and hand python an already-formatted string.
+BOOT_AT=$(date -d "@$(( $(date +%s) - UPTIME_SECONDS ))" -Iseconds 2>/dev/null)
+
 RCLONE_PROCESSES=$(pgrep -c -x rclone 2>/dev/null)
 RCLONE_PROCESSES=${RCLONE_PROCESSES:-0}
 
 SYSTEM_JSON=$(python3 - "$LOAD1" "$LOAD5" "$LOAD15" "$MEM_TOTAL_KB" "$MEM_AVAIL_KB" \
-  "$UPTIME_SECONDS" "$RCLONE_PROCESSES" "$GENERATED_AT" <<'PYEOF'
+  "$BOOT_AT" "$RCLONE_PROCESSES" "$GENERATED_AT" <<'PYEOF'
 import json, sys
-from datetime import datetime, timedelta
 
-load1, load5, load15, total_kb, avail_kb, uptime_s, rclone_procs, generated_at = sys.argv[1:9]
+load1, load5, load15, total_kb, avail_kb, boot_at_str, rclone_procs, generated_at = sys.argv[1:9]
 
 try:
     total_kb = int(total_kb)
     avail_kb = int(avail_kb)
     if total_kb <= 0:
         raise ValueError("MemTotal missing or zero")
+    if not boot_at_str:
+        raise ValueError("boot_at unavailable")
     used_gb = round((total_kb - avail_kb) / 1024 / 1024, 1)
     total_gb = round(total_kb / 1024 / 1024, 1)
     percent = round((total_kb - avail_kb) / total_kb * 100)
 
-    boot_dt = datetime.fromisoformat(generated_at) - timedelta(seconds=int(uptime_s))
-    boot_at = boot_dt.isoformat()
-
     data = {
         "load_avg": [float(load1), float(load5), float(load15)],
         "memory": {"used_gb": used_gb, "total_gb": total_gb, "percent": percent},
-        "boot_at": boot_at,
+        "boot_at": boot_at_str,
         "rclone_processes": int(rclone_procs),
     }
     print(json.dumps(data))
