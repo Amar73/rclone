@@ -815,11 +815,61 @@ readonly CEPH_WATCHDOG_LOCKFILE="/var/lock/ceph_watchdog_recover.lock"
 # При текущих значениях: 3 + 15 + 5*(15+5) + 4*5 = 138с, отсюда запас до 150с.
 readonly CEPH_WATCHDOG_STOP_WAIT_TIMEOUT=150
 
+# Учётные данные для узкого client.watchdog (только osd blocklist ls/rm) —
+# отдельные от основного /etc/ceph/ceph.conf на этих хостах, который
+# устарел и указывает на несуществующие mon IP.
+readonly CEPH_WATCHDOG_CONF="/etc/ceph/ceph.watchdog.conf"
+readonly CEPH_WATCHDOG_KEYRING="/etc/ceph/ceph.watchdog.keyring"
+readonly CEPH_WATCHDOG_BLOCKLIST_TIMEOUT=10
+
 # Возвращает 0, если /ceph реально доступен (не просто "смонтирован" —
 # именно это различие важно: mountpoint -q может быть true, пока реальный
 # stat/ls виснет или даёт Permission denied).
 ceph_watchdog_check() {
     timeout "$CEPH_WATCHDOG_STAT_TIMEOUT" stat /ceph >/dev/null 2>&1
+}
+
+# Ищет записи Ceph OSD blocklist, совпадающие с собственными IP этого
+# хоста, и снимает их. Возвращает 0, если хотя бы одна запись была
+# найдена и успешно снята, 1 иначе (нечего снимать, нет совпадений,
+# или сама команда rm не удалась). Любая ошибка здесь (недоступные
+# мониторы, отсутствующий keyring) должна тихо приводить к 1, а не
+# прерывать вызывающую функцию.
+ceph_watchdog_clear_own_blocklist() {
+    local own_ips
+    own_ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+
+    local blocklist_entries
+    blocklist_entries=$(timeout "$CEPH_WATCHDOG_BLOCKLIST_TIMEOUT" \
+        ceph -c "$CEPH_WATCHDOG_CONF" --keyring "$CEPH_WATCHDOG_KEYRING" \
+        osd blocklist ls 2>/dev/null | awk '{print $1}')
+
+    if [[ -z "$own_ips" || -z "$blocklist_entries" ]]; then
+        return 1
+    fi
+
+    local cleared=false
+    local entry ip
+    while IFS= read -r entry; do
+        [[ -z "$entry" ]] && continue
+        while IFS= read -r ip; do
+            [[ -z "$ip" ]] && continue
+            if [[ "$entry" == "$ip:"* ]]; then
+                log INFO "ceph_watchdog: найдена собственная запись в blocklist:" \
+                          "$entry. Снимаю блокировку."
+                if timeout "$CEPH_WATCHDOG_BLOCKLIST_TIMEOUT" \
+                    ceph -c "$CEPH_WATCHDOG_CONF" --keyring "$CEPH_WATCHDOG_KEYRING" \
+                    osd blocklist rm "$entry" >/dev/null 2>&1; then
+                    cleared=true
+                fi
+            fi
+        done <<< "$own_ips"
+    done <<< "$blocklist_entries"
+
+    if [[ "$cleared" == "true" ]]; then
+        return 0
+    fi
+    return 1
 }
 
 # Останавливает текущие rclone-процессы и перемонтирует /ceph.
@@ -863,6 +913,16 @@ ceph_watchdog_recover() {
             sleep "$CEPH_WATCHDOG_REMOUNT_SLEEP"
         fi
     done
+
+    if ceph_watchdog_clear_own_blocklist; then
+        log INFO "ceph_watchdog: попытка перемонтирования после снятия blocklist"
+        if timeout -k "$CEPH_WATCHDOG_TIMEOUT_KILL_GRACE" "$CEPH_WATCHDOG_MOUNT_TIMEOUT" mount /ceph 2>>"$LOGFILE" && ceph_watchdog_check; then
+            log INFO "ceph_watchdog: снята собственная блокировка, /ceph перемонтирован"
+            flock -u "$recover_lock_fd"
+            exec {recover_lock_fd}>&-
+            return 0
+        fi
+    fi
 
     log ERROR "ceph_watchdog: не удалось перемонтировать /ceph после" \
               "$CEPH_WATCHDOG_REMOUNT_ATTEMPTS попыток. Продолжаю наблюдение."
