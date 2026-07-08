@@ -1,6 +1,6 @@
 #!/usr/local/bin/bash
 # =================================================================================================
-# cephtominio_v3.3.0.sh — репликация Ceph RADOS Gateway S3 ➜ MinIO S3 через rclone
+# cephtominio_v3.3.1.sh — репликация Ceph RADOS Gateway S3 ➜ MinIO S3 через rclone
 #
 # Автор оригинала: Андрей Марьяненко (ведущий инженер)
 # Платформа: FreeBSD 14.2, bash (/usr/local/bin/bash — GNU Bash из портов, не /bin/sh)
@@ -56,7 +56,18 @@
 #
 # ─── ЖУРНАЛ ИЗМЕНЕНИЙ ─────────────────────────────────────────────────────────────────────────
 #
-#  v3.3.0 (текущая):
+#  v3.3.1 (текущая):
+#    - ИСПРАВЛЕНО: count_objects — в awk-разделителе отсутствовал «:», из-за чего
+#      $(i+2) указывал на пустое поле, и функция всегда возвращала 0.
+#      validate_pair_counts молча пропускала расхождения (0==0 → OK). Добавлен «:».
+#    - ИСПРАВЛЕНО: check_ceph_status_soft — команда передаётся через «bash -s <<<»
+#      вместо «bash -c "$var"»; устраняет двойное раскрытие переменной локальным shell.
+#    - ИСПРАВЛЕНО: StrictHostKeyChecking=no → accept-new; предотвращает MITM-атаку.
+#    - УЛУЧШЕНО: retry_rclone — «seq» заменён на арифметический цикл; нет subprocess.
+#    - УЛУЧШЕНО: cmd_str — O(n²) конкатенация строк заменена на массив (линейная).
+#    - УЛУЧШЕНО: rotate_logs — 4 вызова find объединены в один.
+#
+#  v3.3.0:
 #    - ИСПРАВЛЕНО: retry_rclone — убран pipe из критического пути; вывод rclone пишется
 #      во временный файл, затем читается. Это устраняет ненадёжное чтение PIPESTATUS.
 #    - ИСПРАВЛЕНО: LOGFILE добавлен в export — теперь дочерние процессы xargs корректно
@@ -116,7 +127,7 @@ export LANG=C LC_ALL=C
 
 readonly SCRIPT_NAME="${0##*/}"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly SCRIPT_VERSION="3.3.0"
+readonly SCRIPT_VERSION="3.3.1"
 
 # Минимально допустимая версия rclone.
 # Версии ниже 1.60 не имеют --use-json-log и ненадёжно поддерживают --backup-dir.
@@ -343,12 +354,12 @@ die() {
 # Используется для логирования командных строк перед их выполнением.
 # Пример: cmd_str rclone sync "a:b" "c:d" → "rclone sync a:b c:d"
 cmd_str() {
-  local out=""
+  local -a parts=()
   local arg
   for arg in "$@"; do
-    printf -v out '%s%s ' "$out" "$(printf '%q' "$arg")"
+    parts+=( "$(printf '%q' "$arg")" )
   done
-  printf '%s' "${out% }"
+  printf '%s' "${parts[*]}"
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -387,10 +398,12 @@ init_logging() {
 rotate_logs() {
   log INFO "Ротация логов старше 30 дней в $LOGDIR"
   # «|| true» чтобы ошибка find (например, нет прав) не прервала скрипт.
-  find "$LOGDIR" -type f -name "${SCRIPT_NAME%.sh}_*.log"         -mtime +30 -delete 2>/dev/null || true
-  find "$LOGDIR" -type f -name "${SCRIPT_NAME%.sh}_*.jsonl"       -mtime +30 -delete 2>/dev/null || true
-  find "$LOGDIR" -type f -name "${SCRIPT_NAME%.sh}_*.summary.txt" -mtime +30 -delete 2>/dev/null || true
-  find "$LOGDIR" -type f -name "${SCRIPT_NAME%.sh}_*.status.tsv"  -mtime +30 -delete 2>/dev/null || true
+  find "$LOGDIR" -type f \( \
+    -name "${SCRIPT_NAME%.sh}_*.log"         -o \
+    -name "${SCRIPT_NAME%.sh}_*.jsonl"       -o \
+    -name "${SCRIPT_NAME%.sh}_*.summary.txt" -o \
+    -name "${SCRIPT_NAME%.sh}_*.status.tsv"  \
+  \) -mtime +30 -delete 2>/dev/null || true
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -608,14 +621,15 @@ check_ceph_status_soft() {
 
   log INFO "Проверка Ceph через SSH: $CEPH_STATUS_SSH_HOST → $CEPH_STATUS_SSH_CMD"
 
-  # -o ConnectTimeout=5  : не ждать подключения дольше 5 секунд
-  # -o BatchMode=yes     : не спрашивать пароль (только ключи)
-  # bash -c "..."        : выполняем строку как команду shell, а не как бинарник
+  # -o ConnectTimeout=5       : не ждать подключения дольше 5 секунд
+  # -o BatchMode=yes          : не спрашивать пароль (только ключи)
+  # -o StrictHostKeyChecking=accept-new : принимать новые ключи, отклонять изменившиеся
+  # bash -s <<< "$cmd"        : команда передаётся через stdin — без двойного раскрытия
   if ssh -o ConnectTimeout=5 \
          -o BatchMode=yes \
-         -o StrictHostKeyChecking=no \
+         -o StrictHostKeyChecking=accept-new \
          "$CEPH_STATUS_SSH_HOST" \
-         bash -c "$CEPH_STATUS_SSH_CMD" >/dev/null 2>&1; then
+         bash -s >/dev/null 2>&1 <<< "$CEPH_STATUS_SSH_CMD"; then
     log INFO "Ceph-кластер в порядке"
   else
     log WARNING "Проблемы с состоянием Ceph-кластера или SSH-подключением к $CEPH_STATUS_SSH_HOST"
@@ -682,7 +696,7 @@ retry_rclone() {
   # shellcheck disable=SC2064
   trap "rm -f '$tmpout'" RETURN
 
-  for attempt in $(seq 1 "$retries"); do
+  for (( attempt=1; attempt<=retries; attempt++ )); do
     log INFO "Попытка $attempt/$retries: $(cmd_str "${cmd[@]}")"
 
     # Выполняем команду, весь вывод (stdout+stderr) пишем в tmpout.
@@ -753,7 +767,7 @@ count_objects() {
 
   # Извлекаем поле «count» через awk (избегаем зависимости от jq).
   if [[ -n "$json_out" ]]; then
-    n="$(printf '%s' "$json_out" | awk -F'[,{}"]' '{for(i=1;i<=NF;i++) if($i=="count") print $(i+2)}')"
+    n="$(printf '%s' "$json_out" | awk -F'[,{}":]' '{for(i=1;i<=NF;i++) if($i=="count") print $(i+2)}')"
     n="${n:-0}"
   fi
 
