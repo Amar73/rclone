@@ -847,13 +847,13 @@ ceph_watchdog_check() {
 # прерывать вызывающую функцию.
 ceph_watchdog_clear_own_blocklist() {
     local own_ips
-    own_ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+    own_ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1) || true
 
     local blocklist_entries
     blocklist_entries=$(timeout "$CEPH_WATCHDOG_BLOCKLIST_TIMEOUT" \
         podman run --rm --entrypoint ceph -v /etc/ceph:/etc/ceph:ro "$CEPH_WATCHDOG_CLI_IMAGE" \
         -c "$CEPH_WATCHDOG_CONF" --keyring "$CEPH_WATCHDOG_KEYRING" --id watchdog \
-        osd blocklist ls 2>/dev/null | awk '{print $1}')
+        osd blocklist ls 2>/dev/null | awk '{print $1}') || true
 
     if [[ -z "$own_ips" || -z "$blocklist_entries" ]]; then
         return 1
