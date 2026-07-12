@@ -67,8 +67,18 @@
 #                             возможного использования в будущем и пока пуст).
 #   RCLONE_TRANSFERS        — число параллельных передач rclone (30)
 #   RCLONE_CHECKERS         — число потоков проверки rclone (8)
-#   RCLONE_RETRIES          — число повторов при ошибке (5)
-#   RCLONE_RETRIES_SLEEP    — пауза между повторами (10s)
+#   RCLONE_RETRIES          — число повторов при ошибке (14)
+#   RCLONE_RETRIES_SLEEP    — пауза между повторами (15s)
+#                             Бюджет (RCLONE_RETRIES-1)*RCLONE_RETRIES_SLEEP
+#                             должен с запасом покрывать худший случай
+#                             ceph_watchdog_recover() (см. CEPH_WATCHDOG_
+#                             STOP_WAIT_TIMEOUT=150с + fallback снятия
+#                             blocklist ещё ~40с) — иначе rclone сдаётся
+#                             раньше, чем watchdog успевает перемонтировать
+#                             /ceph, и внутренняя ошибка "directory not
+#                             found" попадает в статистику как реальный
+#                             сбой, хотя /ceph восстанавливается секундами
+#                             позже. При 14/15s бюджет = 195с.
 #   RCLONE_BUFFER_SIZE      — буфер памяти на файл (16M)
 #   RCLONE_CHECKSUM_MODE    — true: сравнение по контрольной сумме (--checksum,
 #                             как раньше); false: быстрое сравнение по
@@ -149,8 +159,8 @@ readonly CEPH_MON_CONTAINER="${CEPH_MON_CONTAINER:-ceph-mon-cephrgw01}"
 
 readonly RCLONE_TRANSFERS="${RCLONE_TRANSFERS:-30}"
 readonly RCLONE_CHECKERS="${RCLONE_CHECKERS:-8}"
-readonly RCLONE_RETRIES="${RCLONE_RETRIES:-5}"
-readonly RCLONE_RETRIES_SLEEP="${RCLONE_RETRIES_SLEEP:-10s}"
+readonly RCLONE_RETRIES="${RCLONE_RETRIES:-14}"
+readonly RCLONE_RETRIES_SLEEP="${RCLONE_RETRIES_SLEEP:-15s}"
 readonly RCLONE_BUFFER_SIZE="${RCLONE_BUFFER_SIZE:-16M}"
 readonly RCLONE_CHECKSUM_MODE="${RCLONE_CHECKSUM_MODE:-true}"
 
