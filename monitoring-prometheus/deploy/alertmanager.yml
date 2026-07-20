@@ -16,7 +16,7 @@ receivers:
         # Токен лежит отдельным файлом с правами 640 root:prometheus — в конфиге,
         # который хранится в git, секрета быть не должно.
         bot_token_file: /etc/prometheus/telegram_bot_token
-        chat_id: CHAT_ID_PLACEHOLDER
+        chat_id: 384955770
         api_url: https://api.telegram.org
         parse_mode: HTML
         message: |-
