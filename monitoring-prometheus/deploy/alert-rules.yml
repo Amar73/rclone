@@ -1,0 +1,100 @@
+groups:
+  - name: backup
+    rules:
+      - alert: BackupStale
+        expr: (time() - rclone_backup_last_run_timestamp_seconds) > 26 * 3600
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Бэкап на {{ $labels.host }} не запускался больше суток"
+          description: >-
+            Последний прогон был {{ $value | humanizeDuration }} назад.
+            Бэкапы должны идти ежедневно.
+
+      - alert: BackupVeryStale
+        expr: (time() - rclone_backup_last_run_timestamp_seconds) > 7 * 24 * 3600
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Бэкап на {{ $labels.host }} не запускался больше недели"
+          description: "Последний прогон был {{ $value | humanizeDuration }} назад."
+
+      - alert: BackupFailed
+        expr: rclone_backup_last_run_success == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Последний бэкап на {{ $labels.host }} завершился неуспешно"
+
+      - alert: BackupErrors
+        expr: rclone_backup_last_run_errors > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ошибки в последнем бэкапе на {{ $labels.host }}"
+          description: "Ошибок: {{ $value }}."
+
+      - alert: BackupBucketsFailed
+        expr: rclone_backup_buckets_failed > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Бакеты с ошибками на {{ $labels.host }}"
+          description: "Не синхронизировано бакетов: {{ $value }}."
+
+  - name: backup-infrastructure
+    rules:
+      # Сборщик не смог опросить конкретный хост.
+      - alert: BackupCollectorHostDown
+        expr: rclone_backup_collector_up == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Не удаётся получить статус бэкапа с {{ $labels.host }}"
+          description: >-
+            SSH-опрос не отвечает. Значения бэкапа для этого хоста намеренно
+            не обновляются, чтобы не выдавать устаревшие данные за свежие.
+
+      # Умер сам сборщик на arch-b. Без этого правила все backup-метрики просто
+      # застынут на последних значениях и будут выглядеть здоровыми.
+      - alert: BackupCollectorStale
+        expr: (time() - rclone_backup_collector_last_run_timestamp_seconds) > 900
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Сборщик метрик на arch-b не отрабатывал больше 15 минут"
+          description: >-
+            Таймер backup-metrics.timer, вероятно, не работает. Все backup-метрики
+            сейчас застыли и не отражают реальность.
+
+      - alert: CephUnavailable
+        expr: rclone_backup_ceph_accessible == 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CephFS недоступен на {{ $labels.host }}"
+          description: "Бэкап без CephFS работать не сможет."
+
+      - alert: BackupDiskFilling
+        expr: rclone_backup_disk_used_percent > 90
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Том /backup на {{ $labels.host }} заполнен на {{ $value }}%"
+
+      - alert: NodeExporterDown
+        expr: up == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus не может опросить {{ $labels.instance }}"

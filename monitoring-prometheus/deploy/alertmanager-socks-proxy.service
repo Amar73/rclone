@@ -1,0 +1,25 @@
+[Unit]
+Description=SOCKS5-туннель через ovh для доставки алертов в Telegram
+# api.telegram.org недоступен напрямую с arch-b (таймаут), но доступен с ovh.
+# Alertmanager ходит в Telegram через этот прокси (proxy_url в alertmanager.yml).
+After=network-online.target
+Wants=network-online.target
+Before=prometheus-alertmanager.service
+
+[Service]
+User=amar
+Group=amar
+# -N — не выполнять команд, только форвардинг.
+# ServerAlive* — быстро замечать разрыв канала, чтобы systemd успел перезапустить.
+ExecStart=/usr/bin/ssh -N -D 127.0.0.1:1080 \
+    -o BatchMode=yes \
+    -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3 \
+    -o StrictHostKeyChecking=yes \
+    amar@51.75.66.60
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

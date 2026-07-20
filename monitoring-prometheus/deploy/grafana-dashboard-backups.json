@@ -10,14 +10,14 @@
   "panels": [
     {
       "type": "stat",
-      "title": "Возраст последнего успешного бэкапа",
+      "title": "Возраст последнего прогона бэкапа",
       "description": "Сколько прошло с завершения последнего прогона. Зелёный до 26ч, красный после 48ч.",
       "gridPos": { "h": 5, "w": 8, "x": 0, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
-          "expr": "time() - rclone_backup_last_success_timestamp_seconds",
+          "expr": "time() - rclone_backup_last_run_timestamp_seconds",
           "legendFormat": "{{host}}"
         }
       ],

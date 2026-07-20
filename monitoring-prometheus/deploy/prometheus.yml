@@ -2,6 +2,15 @@ global:
   scrape_interval: 30s
   evaluation_interval: 30s
 
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - 127.0.0.1:9093
+
 scrape_configs:
   # OS-метрики бэкап-хостов. node_exporter там уже развёрнут (v0.17.0 в podman
   # из registry.ceph.kiae.ru) и принадлежит другой команде — мы его не трогаем,
@@ -12,6 +21,9 @@ scrape_configs:
           - arch03:9100
           - arch04:9100
           - arch05:9100
+          # archminio01 появится здесь после обновления FreeBSD 14.2 -> 14.3/14.4:
+          # сейчас pkg отвергает каталог целиком (в quarterly лежат пакеты под 14.4).
+          - archminio02:9100
     relabel_configs:
       # instance остаётся "arch03:9100", а host= делаем коротким, чтобы он
       # совпадал с меткой host= у backup-метрик и их можно было джойнить.

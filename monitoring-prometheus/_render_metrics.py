@@ -25,8 +25,11 @@ METRICS = [
      "1 если статус бэкапа с хоста успешно получен, 0 если хост не опросился", "gauge"),
     ("rclone_backup_status_generated_timestamp_seconds",
      "Когда сам хост сформировал свой статус (unix time)", "gauge"),
-    ("rclone_backup_last_success_timestamp_seconds",
-     "Время завершения последнего прогона бэкапа (unix time)", "gauge"),
+    # Именно last_run, а не last_success: backup_status.sh отдаёт САМЫЙ СВЕЖИЙ
+    # summary.json независимо от его result. Успешность смотреть по
+    # rclone_backup_last_run_success.
+    ("rclone_backup_last_run_timestamp_seconds",
+     "Время завершения последнего прогона бэкапа, любого результата (unix time)", "gauge"),
     ("rclone_backup_last_run_success",
      "1 если последний прогон завершился result=success, иначе 0", "gauge"),
     ("rclone_backup_last_run_files_copied",
@@ -53,6 +56,11 @@ METRICS = [
      "Заполненность тома /backup в процентах", "gauge"),
     ("rclone_backup_rclone_processes",
      "Количество запущенных процессов rclone", "gauge"),
+    # Только archminio01: его скрипт пишет .status.tsv с итогом по каждому бакету.
+    ("rclone_backup_buckets_ok",
+     "Бакетов, синхронизированных успешно в последнем прогоне", "gauge"),
+    ("rclone_backup_buckets_failed",
+     "Бакетов, завершившихся с ошибкой в последнем прогоне", "gauge"),
     ("rclone_backup_collector_last_run_timestamp_seconds",
      "Когда сборщик метрик отработал в последний раз (unix time)", "gauge"),
     ("rclone_backup_collector_duration_seconds",
@@ -85,27 +93,48 @@ def fmt(value):
     return repr(float(value)) if isinstance(value, float) else str(value)
 
 
+def parse_arch0x(raw):
+    """JSON от backup_status.sh --print."""
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    # backup_status.sh --print отдаёт {"error": ...} если файла статуса нет;
+    # такой ответ равносилен неуспеху опроса.
+    if isinstance(parsed, dict) and "host" in parsed and "error" not in parsed:
+        return parsed
+    return None
+
+
+def parse_keyvalue(raw):
+    """Простые key=value строки от archminio-хостов."""
+    data = {}
+    for line in raw.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            data[key.strip()] = value.strip()
+    # reached=1 печатается первой строкой удалённой команды: это отличает
+    # "хост опрошен, но логов нет" от "до хоста не достучались".
+    return data if data.get("reached") == "1" else None
+
+
 def parse_stream(lines):
-    """Разбирает кадры ---HOST:x---/---END:x--- в {host: dict|None}."""
+    """Разбирает кадры ---HOST:имя:тип---/---END:имя--- в {host: (type, data|None)}."""
     result = {}
     current_host = None
+    current_type = None
     buf = []
     for line in lines:
         if line.startswith("---HOST:") and line.endswith("---"):
-            current_host = line[len("---HOST:"):-len("---")]
+            current_host, _, current_type = line[len("---HOST:"):-len("---")].partition(":")
             buf = []
         elif line.startswith("---END:") and line.endswith("---"):
             raw = "\n".join(buf).strip()
-            data = None
-            try:
-                parsed = json.loads(raw)
-                # backup_status.sh --print отдаёт {"error": ...} если файла статуса
-                # нет; такой ответ равносилен неуспеху опроса.
-                if isinstance(parsed, dict) and "host" in parsed and "error" not in parsed:
-                    data = parsed
-            except (json.JSONDecodeError, TypeError):
-                data = None
-            result[current_host] = data
+            if current_type == "arch0x":
+                data = parse_arch0x(raw)
+            else:
+                data = parse_keyvalue(raw)
+            result[current_host] = (current_type, data)
             current_host = None
         elif current_host is not None:
             buf.append(line)
@@ -120,17 +149,35 @@ def collect_samples(hosts, started_at):
         if value is not None:
             samples[name].append(({"host": host}, value))
 
-    for host, data in sorted(hosts.items()):
+    def add_int(name, host, data, key):
+        raw = data.get(key)
+        if raw is not None:
+            try:
+                add(name, host, int(raw))
+            except (TypeError, ValueError):
+                pass
+
+    for host, (host_type, data) in sorted(hosts.items()):
         if data is None:
             add("rclone_backup_collector_up", host, 0)
             continue
         add("rclone_backup_collector_up", host, 1)
+
+        if host_type != "arch0x":
+            # archminio: полноценного статуса пока нет — их скрипты запускаются
+            # вручную и подлежат переработке. Снимаем то, что есть: время
+            # последней записи в лог и итог по бакетам.
+            add_int("rclone_backup_last_run_timestamp_seconds", host, data, "last_run_epoch")
+            add_int("rclone_backup_buckets_ok", host, data, "buckets_ok")
+            add_int("rclone_backup_buckets_failed", host, data, "buckets_failed")
+            continue
+
         add("rclone_backup_status_generated_timestamp_seconds", host,
             to_epoch(data.get("generated_at")))
 
         last = data.get("last_success") or {}
         if last and "error" not in last:
-            add("rclone_backup_last_success_timestamp_seconds", host,
+            add("rclone_backup_last_run_timestamp_seconds", host,
                 to_epoch(last.get("finished_at")))
             add("rclone_backup_last_run_success", host,
                 1 if last.get("result") == "success" else 0)

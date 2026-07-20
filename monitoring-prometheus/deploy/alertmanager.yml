@@ -1,0 +1,37 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: telegram
+  group_by: [alertname, host]
+  # Не спамить: копим 30с перед первым сообщением, повторяем не чаще раза в 6 часов.
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 6h
+
+receivers:
+  - name: telegram
+    telegram_configs:
+      - send_resolved: true
+        # Токен лежит отдельным файлом с правами 640 root:prometheus — в конфиге,
+        # который хранится в git, секрета быть не должно.
+        bot_token_file: /etc/prometheus/telegram_bot_token
+        chat_id: CHAT_ID_PLACEHOLDER
+        api_url: https://api.telegram.org
+        parse_mode: HTML
+        message: |-
+          {{ if eq .Status "firing" }}🔴{{ else }}✅{{ end }} <b>{{ .CommonLabels.alertname }}</b>
+          {{ range .Alerts }}
+          <b>{{ .Labels.host }}</b> — {{ .Annotations.summary }}
+          {{ with .Annotations.description }}{{ . }}{{ end }}
+          {{ end }}
+        http_config:
+          # api.telegram.org недоступен напрямую с arch-b; ходим через SSH-туннель
+          # на ovh (см. alertmanager-socks-proxy.service).
+          proxy_url: socks5://127.0.0.1:1080
+
+inhibit_rules:
+  # Пока горит critical по устареванию, не дублировать тем же warning.
+  - source_matchers: [alertname = BackupVeryStale]
+    target_matchers: [alertname = BackupStale]
+    equal: [host]
