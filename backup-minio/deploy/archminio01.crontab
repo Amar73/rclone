@@ -1,0 +1,17 @@
+# crontab для root на archminio01 (FreeBSD — systemd там нет).
+# Установка:  crontab -u root /usr/local/etc/archminio01.crontab
+# Проверка:   crontab -l -u root
+#
+# Схема та же, что и на archminio02: ежедневно быстрая сверка, раз в неделю
+# полная по контрольным суммам. Двойной запуск невозможен — в скрипте flock.
+#
+# Прежний ручной режим (запуск из tmux) привёл к тому, что прогон, начатый
+# 2026-04-26, шёл 9.4 суток, а затем бэкапов не было вообще три месяца.
+
+PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+
+# Ежедневно в 21:00 — быстрая сверка (размер + время модификации).
+0 21 * * *  SYNC_MODE=fast /usr/local/bin/scripts/cephtominio_v3.4.0.sh >> /var/log/rclone-sync/cron.log 2>&1
+
+# По воскресеньям в 19:00 — полная сверка по контрольным суммам.
+0 19 * * 0  SYNC_MODE=checksum /usr/local/bin/scripts/cephtominio_v3.4.0.sh >> /var/log/rclone-sync/cron.log 2>&1

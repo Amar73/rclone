@@ -1,0 +1,12 @@
+[Unit]
+Description=Еженедельная полная сверка CephFS -> MinIO по контрольным суммам
+
+[Timer]
+# Суббота — чтобы длинный прогон не пересекался с рабочей нагрузкой буднего дня.
+OnCalendar=Sat *-*-* 20:00:00
+RandomizedDelaySec=1800
+Persistent=true
+Unit=cephfs-to-minio@checksum.service
+
+[Install]
+WantedBy=timers.target

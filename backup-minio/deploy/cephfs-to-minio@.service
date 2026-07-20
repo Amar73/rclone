@@ -1,0 +1,22 @@
+[Unit]
+Description=Синхронизация CephFS -> MinIO на archminio02 (режим сверки %i)
+Documentation=https://github.com/Amar73/rclone
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# %i — fast или checksum, задаётся именем инстанса таймера.
+Environment=SYNC_MODE=%i
+ExecStart=/usr/local/bin/scripts/cephfs_to_minio_v4.1.0.sh
+# Подстраховка сверху: внутри скрипта уже есть DIR_TIMEOUT на каждую директорию,
+# этот лимит ловит зависание вне rclone. Прогон 2026-04-26 шёл больше недели
+# именно потому, что никакого потолка не существовало.
+TimeoutStartSec=36h
+# Бэкап не должен мешать основной нагрузке хоста.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+[Install]
+WantedBy=multi-user.target

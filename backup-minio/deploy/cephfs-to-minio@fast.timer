@@ -1,0 +1,13 @@
+[Unit]
+Description=Ежедневная быстрая синхронизация CephFS -> MinIO (размер + mtime)
+
+[Timer]
+OnCalendar=*-*-* 22:00:00
+# Разброс, чтобы не стартовать одновременно с другими ночными задачами.
+RandomizedDelaySec=1800
+# Если хост был выключен в момент запуска — догнать после старта.
+Persistent=true
+Unit=cephfs-to-minio@fast.service
+
+[Install]
+WantedBy=timers.target
