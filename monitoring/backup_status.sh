@@ -96,12 +96,61 @@ mount | grep -q ' ceph ' && CEPH_MOUNTED=true
 CEPH_ACCESSIBLE=false
 timeout 3 stat /ceph >/dev/null 2>&1 && CEPH_ACCESSIBLE=true
 
-LAST_MDS_INCIDENT="null"
-LAST_MDS_LINE=$(dmesg -T 2>/dev/null | grep -i "rejected session" | tail -1)
-if [[ -n "$LAST_MDS_LINE" ]]; then
-  LAST_MDS_RAW=$(echo "$LAST_MDS_LINE" | sed -E 's/^\[(.*)\].*/\1/')
-  LAST_MDS_INCIDENT=$(date -d "$LAST_MDS_RAW" -Iseconds 2>/dev/null || echo "null")
-fi
+# Инциденты MDS берём из dmesg. Раньше здесь грепалось ТОЛЬКО "rejected session",
+# а ядро на этих хостах такую строку не пишет вообще — при реальной эвиктации
+# клиента в буфере лежит "reconnect denied". Из-за этого настоящие потери сессии
+# (например 12 и 13 июля на arch03) метрикой не замечались никогда.
+#
+# Считаем три класса событий. Шаблоны подобраны так, чтобы на один реальный
+# отвал приходилась примерно одна строка: ядро на каждый эпизод пишет целую
+# пачку ("hung" + "reset on" + "closed our session" + "reconnect denied"), и
+# если грепать их все скопом, один отвал 13 июля выглядит как четыре инцидента.
+#   stale     — "caps stale", ранний признак; часто сам заживает ("caps renewed")
+#   hung      — MDS не отвечает, /ceph в этот момент уже мёртв
+#   eviction  — сессия потеряна окончательно (это и есть блокировка клиента)
+#
+# Счётчики живут ровно столько, сколько живёт кольцевой буфер dmesg: перезагрузка
+# или переполнение буфера обнуляют их. Поэтому отдаём ещё и mds_window_start —
+# время самой старой строки в буфере, чтобы по счётчику было видно, за какой
+# период он посчитан, и ноль от отсутствия истории отличался от ноля «всё тихо».
+MDS_STALE_RE='mds[0-9]+ caps stale'
+MDS_HUNG_RE='mds[0-9]+ hung'
+MDS_EVICTION_RE='mds[0-9]+ (reconnect denied|rejected session)'
+# Последним «серьёзным» считается любое из двух: зависание или потеря сессии.
+MDS_SEVERE_RE="$MDS_HUNG_RE|$MDS_EVICTION_RE"
+
+DMESG_RAW=$(dmesg -T 2>/dev/null || true)
+
+# "[Sun Jul 12 02:20:15 2026] ceph: ..." -> "Sun Jul 12 02:20:15 2026"
+dmesg_line_ts() {
+  local line="$1" raw
+  [[ -z "$line" ]] && { echo "null"; return; }
+  raw="${line#[}"
+  raw="${raw%%]*}"
+  date -d "$raw" -Iseconds 2>/dev/null || echo "null"
+}
+
+mds_last_ts() {
+  local line
+  line=$(printf '%s\n' "$DMESG_RAW" | grep -EI "$1" | tail -1 || true)
+  dmesg_line_ts "$line"
+}
+
+# grep -c возвращает 1, когда совпадений нет — гасим, иначе получим пустую строку.
+mds_count() {
+  printf '%s\n' "$DMESG_RAW" | grep -EIc "$1" || true
+}
+
+LAST_MDS_INCIDENT=$(mds_last_ts "$MDS_SEVERE_RE")
+LAST_MDS_STALE=$(mds_last_ts "$MDS_STALE_RE")
+MDS_HUNG_COUNT=$(mds_count "$MDS_HUNG_RE")
+MDS_EVICTION_COUNT=$(mds_count "$MDS_EVICTION_RE")
+MDS_STALE_COUNT=$(mds_count "$MDS_STALE_RE")
+MDS_HUNG_COUNT=${MDS_HUNG_COUNT:-0}
+MDS_EVICTION_COUNT=${MDS_EVICTION_COUNT:-0}
+MDS_STALE_COUNT=${MDS_STALE_COUNT:-0}
+
+MDS_WINDOW_START=$(dmesg_line_ts "$(printf '%s\n' "$DMESG_RAW" | head -1)")
 
 # --- disk: место на /backup ---
 DISK_LINE=$(df -h /backup 2>/dev/null | tail -1)
@@ -171,12 +220,16 @@ RUNNING_ACTIVE=false
 STATUS_TMP="$STATUS_FILE.tmp.$$"
 python3 - "$HOST" "$GENERATED_AT" "$LAST_SUCCESS_JSON" "$RUNNING_ACTIVE" "$STARTED_AT" \
   "$CHECKS_DONE" "$CHECKS_TOTAL" "$PERCENT" "$CEPH_MOUNTED" "$CEPH_ACCESSIBLE" \
-  "$LAST_MDS_INCIDENT" "$DISK_USED_PERCENT" "$DISK_AVAIL" "$SYSTEM_JSON" > "$STATUS_TMP" <<'PYEOF'
+  "$LAST_MDS_INCIDENT" "$DISK_USED_PERCENT" "$DISK_AVAIL" "$SYSTEM_JSON" \
+  "$LAST_MDS_STALE" "$MDS_HUNG_COUNT" "$MDS_EVICTION_COUNT" "$MDS_STALE_COUNT" \
+  "$MDS_WINDOW_START" > "$STATUS_TMP" <<'PYEOF'
 import json, sys
 
 (host, generated_at, last_success_json, running_active, started_at,
  checks_done, checks_total, percent, ceph_mounted, ceph_accessible,
- last_mds, disk_pct, disk_avail, system_json) = sys.argv[1:15]
+ last_mds, disk_pct, disk_avail, system_json,
+ last_mds_stale, mds_hung_count, mds_eviction_count, mds_stale_count,
+ mds_window_start) = sys.argv[1:20]
 
 last_success = json.loads(last_success_json) if last_success_json != "null" else None
 system = json.loads(system_json) if system_json != "null" else None
@@ -198,7 +251,16 @@ data = {
     "ceph": {
         "mounted": ceph_mounted == "true",
         "accessible": ceph_accessible == "true",
+        # last_mds_incident = последнее СЕРЬЁЗНОЕ событие (потеря сессии).
+        # Имя оставлено прежним ради совместимости с уже работающим рендерером.
         "last_mds_incident": None if last_mds == "null" else last_mds,
+        "last_mds_caps_stale": None if last_mds_stale == "null" else last_mds_stale,
+        # Счётчики — за окно, доступное в dmesg (см. mds_window_start), а не за
+        # всё время: кольцевой буфер обнуляется перезагрузкой и переполнением.
+        "mds_hung_count": int(mds_hung_count) if mds_hung_count.isdigit() else 0,
+        "mds_eviction_count": int(mds_eviction_count) if mds_eviction_count.isdigit() else 0,
+        "mds_caps_stale_count": int(mds_stale_count) if mds_stale_count.isdigit() else 0,
+        "mds_window_start": None if mds_window_start == "null" else mds_window_start,
     },
     "disk": {
         "backup_used_percent": int(disk_pct) if disk_pct.isdigit() else None,

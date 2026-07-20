@@ -271,6 +271,152 @@
         "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
         "tooltip": { "mode": "multi", "sort": "none" }
       }
+    },
+    {
+      "type": "state-timeline",
+      "title": "Состояние CephFS по хостам (история)",
+      "description": "Полоса на каждый хост. Красное «смонтирован, но мёртв» — mount ещё показывает /ceph, но чтение уже не проходит: именно в этом состоянии rclone может принять обрезанный листинг за истину. Данные снимаются раз в 2 минуты, отвалы короче этого интервала сюда не попадают.",
+      "gridPos": { "h": 9, "w": 18, "x": 0, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "rclone_backup_ceph_mounted + rclone_backup_ceph_accessible", "legendFormat": "{{host}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 2,
+          "custom": { "lineWidth": 0, "fillOpacity": 80, "spanNulls": false, "insertNulls": 300000 },
+          "color": { "mode": "thresholds" },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "2": { "text": "работает", "color": "green", "index": 2 },
+                "1": { "text": "смонтирован, но мёртв", "color": "red", "index": 1 },
+                "0": { "text": "не смонтирован", "color": "dark-red", "index": 0 }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "dark-red", "value": null },
+              { "color": "red", "value": 1 },
+              { "color": "green", "value": 2 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "never",
+        "alignValue": "left",
+        "rowHeight": 0.9,
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single", "sort": "none" }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "CephFS смонтирован",
+      "description": "Парная к панели «CephFS доступен». Расхождение между ними (смонтирован — да, доступен — нет) и есть признак зависшего клиента.",
+      "gridPos": { "h": 9, "w": 6, "x": 18, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "rclone_backup_ceph_mounted", "legendFormat": "{{host}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "нет", "color": "red", "index": 0 },
+                "1": { "text": "да", "color": "green", "index": 1 }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Давность последнего инцидента MDS",
+      "description": "Сколько прошло с последнего зависания MDS или потери сессии. «Нет данных» означает, что в текущем буфере dmesg таких событий нет — это не то же самое, что «их не было никогда»: буфер кольцевой и обнуляется при перезагрузке.",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 29 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "time() - rclone_backup_ceph_last_mds_incident_timestamp_seconds", "legendFormat": "{{host}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "нет данных",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 86400 },
+              { "color": "green", "value": 604800 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "bargauge",
+      "title": "События MDS в текущем буфере dmesg",
+      "description": "Счётчики за окно, которое сейчас помещается в dmesg (его начало — метрика rclone_backup_ceph_mds_window_start_timestamp_seconds). Это gauge, а не counter: при перезагрузке хоста значения падают в ноль, rate()/increase() к ним применять нельзя. «caps stale» — ранний признак, «зависаний» и «потерь сессии» — уже авария.",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 29 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "rclone_backup_ceph_mds_caps_stale_events", "legendFormat": "{{host}} · caps stale" },
+        { "refId": "B", "expr": "rclone_backup_ceph_mds_hung_events", "legendFormat": "{{host}} · зависаний" },
+        { "refId": "C", "expr": "rclone_backup_ceph_mds_eviction_events", "legendFormat": "{{host}} · потерь сессии" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true
+      }
     }
   ]
 }

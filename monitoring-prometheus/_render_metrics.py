@@ -51,7 +51,20 @@ METRICS = [
     ("rclone_backup_ceph_accessible",
      "1 если CephFS отвечает на чтение", "gauge"),
     ("rclone_backup_ceph_last_mds_incident_timestamp_seconds",
-     "Время последнего инцидента MDS 'rejected session' (unix time)", "gauge"),
+     "Время последнего серьёзного инцидента MDS - зависание или потеря сессии (unix time)", "gauge"),
+    ("rclone_backup_ceph_last_mds_caps_stale_timestamp_seconds",
+     "Время последнего 'caps stale' - раннего признака отвала MDS (unix time)", "gauge"),
+    # Ниже - именно gauge, а не counter: значения считаются по кольцевому буферу
+    # dmesg и падают до нуля при перезагрузке хоста или переполнении буфера.
+    # rate()/increase() по ним применять нельзя.
+    ("rclone_backup_ceph_mds_hung_events",
+     "Зависаний MDS в пределах текущего буфера dmesg (см. mds_window_start)", "gauge"),
+    ("rclone_backup_ceph_mds_eviction_events",
+     "Потерь сессии MDS в пределах текущего буфера dmesg (см. mds_window_start)", "gauge"),
+    ("rclone_backup_ceph_mds_caps_stale_events",
+     "Событий 'caps stale' в пределах текущего буфера dmesg (см. mds_window_start)", "gauge"),
+    ("rclone_backup_ceph_mds_window_start_timestamp_seconds",
+     "Начало окна, за которое посчитаны счётчики MDS - время старейшей строки dmesg (unix time)", "gauge"),
     ("rclone_backup_disk_used_percent",
      "Заполненность тома /backup в процентах", "gauge"),
     ("rclone_backup_rclone_processes",
@@ -198,6 +211,13 @@ def collect_samples(hosts, started_at):
         add("rclone_backup_ceph_accessible", host, ceph.get("accessible"))
         add("rclone_backup_ceph_last_mds_incident_timestamp_seconds", host,
             to_epoch(ceph.get("last_mds_incident")))
+        add("rclone_backup_ceph_last_mds_caps_stale_timestamp_seconds", host,
+            to_epoch(ceph.get("last_mds_caps_stale")))
+        add("rclone_backup_ceph_mds_hung_events", host, ceph.get("mds_hung_count"))
+        add("rclone_backup_ceph_mds_eviction_events", host, ceph.get("mds_eviction_count"))
+        add("rclone_backup_ceph_mds_caps_stale_events", host, ceph.get("mds_caps_stale_count"))
+        add("rclone_backup_ceph_mds_window_start_timestamp_seconds", host,
+            to_epoch(ceph.get("mds_window_start")))
 
         disk = data.get("disk") or {}
         add("rclone_backup_disk_used_percent", host, disk.get("backup_used_percent"))
