@@ -17,7 +17,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "time() - rclone_backup_last_run_timestamp_seconds",
+          "expr": "time() - rclone_backup_last_run_timestamp_seconds{job=\"arch-b\"}",
           "legendFormat": "{{host}}"
         }
       ],
@@ -50,7 +50,7 @@
       "gridPos": { "h": 5, "w": 4, "x": 8, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "refId": "A", "expr": "rclone_backup_collector_up", "legendFormat": "{{host}}" }
+        { "refId": "A", "expr": "rclone_backup_collector_up{job=\"arch-b\"}", "legendFormat": "{{host}}" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -86,7 +86,7 @@
       "gridPos": { "h": 5, "w": 4, "x": 12, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "refId": "A", "expr": "rclone_backup_last_run_errors", "legendFormat": "{{host}}" }
+        { "refId": "A", "expr": "rclone_backup_last_run_errors{job=\"arch-b\"}", "legendFormat": "{{host}}" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -114,7 +114,7 @@
       "gridPos": { "h": 5, "w": 4, "x": 16, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "refId": "A", "expr": "rclone_backup_ceph_accessible", "legendFormat": "{{host}}" }
+        { "refId": "A", "expr": "rclone_backup_ceph_accessible{job=\"arch-b\"}", "legendFormat": "{{host}}" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -153,7 +153,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "time() - rclone_backup_collector_last_run_timestamp_seconds",
+          "expr": "time() - rclone_backup_collector_last_run_timestamp_seconds{job=\"arch-b\"}",
           "legendFormat": "назад"
         }
       ],
@@ -185,7 +185,7 @@
       "gridPos": { "h": 7, "w": 8, "x": 0, "y": 5 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "refId": "A", "expr": "rclone_backup_disk_used_percent", "legendFormat": "{{host}}" }
+        { "refId": "A", "expr": "rclone_backup_disk_used_percent{job=\"arch-b\"}", "legendFormat": "{{host}}" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -216,7 +216,7 @@
       "gridPos": { "h": 7, "w": 16, "x": 8, "y": 5 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "refId": "A", "expr": "rclone_backup_running_percent", "legendFormat": "{{host}}" }
+        { "refId": "A", "expr": "rclone_backup_running_percent{job=\"arch-b\"}", "legendFormat": "{{host}}" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -239,7 +239,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "refId": "A", "expr": "node_load1", "legendFormat": "{{host}}" }
+        { "refId": "A", "expr": "node_load1{host!=\"\"}", "legendFormat": "{{host}}" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -258,7 +258,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "refId": "A", "expr": "rclone_backup_rclone_processes", "legendFormat": "{{host}}" }
+        { "refId": "A", "expr": "rclone_backup_rclone_processes{job=\"arch-b\"}", "legendFormat": "{{host}}" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -279,7 +279,7 @@
       "gridPos": { "h": 9, "w": 18, "x": 0, "y": 20 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "refId": "A", "expr": "rclone_backup_ceph_mounted + rclone_backup_ceph_accessible", "legendFormat": "{{host}}" }
+        { "refId": "A", "expr": "rclone_backup_ceph_mounted{job=\"arch-b\"} + rclone_backup_ceph_accessible{job=\"arch-b\"}", "legendFormat": "{{host}}" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -324,7 +324,7 @@
       "gridPos": { "h": 9, "w": 6, "x": 18, "y": 20 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "refId": "A", "expr": "rclone_backup_ceph_mounted", "legendFormat": "{{host}}" }
+        { "refId": "A", "expr": "rclone_backup_ceph_mounted{job=\"arch-b\"}", "legendFormat": "{{host}}" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -361,7 +361,7 @@
       "gridPos": { "h": 6, "w": 12, "x": 0, "y": 29 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "refId": "A", "expr": "time() - rclone_backup_ceph_last_mds_incident_timestamp_seconds", "legendFormat": "{{host}}" }
+        { "refId": "A", "expr": "time() - rclone_backup_ceph_last_mds_incident_timestamp_seconds{job=\"arch-b\"}", "legendFormat": "{{host}}" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -392,9 +392,9 @@
       "gridPos": { "h": 6, "w": 12, "x": 12, "y": 29 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "refId": "A", "expr": "rclone_backup_ceph_mds_caps_stale_events", "legendFormat": "{{host}} · caps stale" },
-        { "refId": "B", "expr": "rclone_backup_ceph_mds_hung_events", "legendFormat": "{{host}} · зависаний" },
-        { "refId": "C", "expr": "rclone_backup_ceph_mds_eviction_events", "legendFormat": "{{host}} · потерь сессии" }
+        { "refId": "A", "expr": "rclone_backup_ceph_mds_caps_stale_events{job=\"arch-b\"}", "legendFormat": "{{host}} · caps stale" },
+        { "refId": "B", "expr": "rclone_backup_ceph_mds_hung_events{job=\"arch-b\"}", "legendFormat": "{{host}} · зависаний" },
+        { "refId": "C", "expr": "rclone_backup_ceph_mds_eviction_events{job=\"arch-b\"}", "legendFormat": "{{host}} · потерь сессии" }
       ],
       "fieldConfig": {
         "defaults": {
