@@ -1,0 +1,15 @@
+# /etc/grafana/provisioning/dashboards/rclone-backups.yml
+# Указывает Grafana, откуда подхватывать JSON-дашборды.
+apiVersion: 1
+
+providers:
+  - name: rclone-backups
+    orgId: 1
+    folder: Бэкапы
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

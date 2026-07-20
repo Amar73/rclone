@@ -1,0 +1,11 @@
+[Unit]
+Description=Периодический сбор backup-метрик для Prometheus
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+AccuracySec=10s
+Unit=backup-metrics.service
+
+[Install]
+WantedBy=timers.target

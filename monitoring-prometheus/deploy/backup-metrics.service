@@ -1,0 +1,16 @@
+[Unit]
+Description=Сбор backup-метрик с arch03/04/05 в textfile-коллектор node_exporter
+Documentation=https://github.com/Amar73/rclone
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Именно amar: SSH-ключ к root@arch0X лежит в /home/amar/.ssh/id_ed25519,
+# у root на arch-b ключей нет вообще.
+User=amar
+Group=amar
+ExecStart=/usr/local/bin/scripts/collect_backup_metrics.sh
+# Сбор ходит по сети на 3 хоста с timeout 20s каждый; с запасом.
+TimeoutStartSec=120
+Nice=10

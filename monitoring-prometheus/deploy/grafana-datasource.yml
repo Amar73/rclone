@@ -1,0 +1,14 @@
+# /etc/grafana/provisioning/datasources/prometheus.yml
+# Datasource задаётся файлом, а не кликами в UI, чтобы конфигурация жила в репозитории.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://127.0.0.1:9090
+    isDefault: true
+    # Дашборды ссылаются на этот uid; правка через UI запрещена, чтобы конфиг
+    # в репозитории оставался единственным источником истины.
+    editable: false
