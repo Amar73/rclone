@@ -1,0 +1,12 @@
+# Бакеты-гиганты archminio01 — 1M+ объектов, сверка идёт 5-7 часов.
+# Отдельный редкий прогон с большим таймаутом: в 6h не укладываются даже
+# на v3.4.2, но это не сбой, а физический объём (задержка Ceph RGW на объект).
+# Запускать с BUCKET_TIMEOUT=16h, реже (например раз в неделю).
+# Формат: remote:bucket, по одному на строку, # — комментарий.
+test:db-pmc
+test:db-pdb
+test:db-ena
+test:3dparty-db-test
+test:3rdparty-db-prod
+registry:pypi-registry
+default:k8s-logs

@@ -2,16 +2,28 @@
 # Установка:  crontab -u root /usr/local/etc/archminio01.crontab
 # Проверка:   crontab -l -u root
 #
-# Схема та же, что и на archminio02: ежедневно быстрая сверка, раз в неделю
-# полная по контрольным суммам. Двойной запуск невозможен — в скрипте flock.
+# Раздельная схема (по итогам прогонов 2026-07-20..24):
+#   - Лёгкие/средние бакеты (17 шт.) — ежедневно, таймаут 6h. Все проходят
+#     под v3.4.2 (checkers=16, tpslimit=150) за разумное время.
+#   - Бакеты-гиганты (7 шт., 1M+ объектов) — раз в неделю, таймаут 16h. Сверка
+#     миллиона объектов физически идёт 5-7ч (задержка Ceph RGW на объект) и в
+#     6h не укладывается — это не сбой, а объём. Держим их отдельно, чтобы они
+#     не блокировали ежедневный прогон на сутки.
+#
+# Списки бакетов — в /usr/local/etc/buckets-light.txt и buckets-heavy.txt.
+# Двойной запуск невозможен: в скрипте flock (общий LOCKFILE), поэтому лёгкий и
+# тяжёлый прогоны НЕ должны пересекаться по времени — разнесены (21:00 и Сб 06:00).
 #
 # Прежний ручной режим (запуск из tmux) привёл к тому, что прогон, начатый
 # 2026-04-26, шёл 9.4 суток, а затем бэкапов не было вообще три месяца.
 
 PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 
-# Ежедневно в 21:00 — быстрая сверка (размер + время модификации).
-0 21 * * *  SYNC_MODE=fast /usr/local/bin/scripts/cephtominio_v3.4.0.sh >> /var/log/rclone-sync/cron.log 2>&1
+# Ежедневно в 21:00 — лёгкие/средние бакеты, быстрая сверка (размер + mtime).
+0 21 * * *  SYNC_MODE=fast BUCKET_TIMEOUT=6h BUCKETS_FILE=/usr/local/etc/buckets-light.txt /usr/local/bin/scripts/cephtominio_v3.4.2.sh >> /var/log/rclone-sync/cron-light.log 2>&1
 
-# По воскресеньям в 19:00 — полная сверка по контрольным суммам.
-0 19 * * 0  SYNC_MODE=checksum /usr/local/bin/scripts/cephtominio_v3.4.0.sh >> /var/log/rclone-sync/cron.log 2>&1
+# По субботам в 06:00 — бакеты-гиганты, увеличенный таймаут.
+0 6 * * 6   SYNC_MODE=fast BUCKET_TIMEOUT=16h BUCKETS_FILE=/usr/local/etc/buckets-heavy.txt /usr/local/bin/scripts/cephtominio_v3.4.2.sh >> /var/log/rclone-sync/cron-heavy.log 2>&1
+
+# Раз в неделю (Вс 19:00) — полная сверка лёгких по контрольным суммам.
+0 19 * * 0  SYNC_MODE=checksum BUCKET_TIMEOUT=8h BUCKETS_FILE=/usr/local/etc/buckets-light.txt /usr/local/bin/scripts/cephtominio_v3.4.2.sh >> /var/log/rclone-sync/cron-checksum.log 2>&1

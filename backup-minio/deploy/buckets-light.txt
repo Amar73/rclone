@@ -1,0 +1,20 @@
+# Лёгкие/средние бакеты archminio01 — ежедневный прогон, BUCKET_TIMEOUT=6h.
+# Все они прошли под v3.4.2 (checkers=16, tpslimit=150) в пределах таймаута.
+# Формат: remote:bucket, по одному на строку, # — комментарий.
+test:nbgi-db-public
+test:nbgi-db-private
+test:nbgi-tps
+test:nbgi-db-test
+test:nbgi-db-dev
+test:db-arb-silva
+test:db-metagenomics
+test:db-meta
+test:db-ebi
+test:db-card-blast
+nbgi-init-sequencing:nbgi-private-init-sequencing
+nbgi-init-sequencing:nbgi-public-init-sequencing
+nbgi-init-gd:nbgi-private-init-gd
+nbgi-init-gd:nbgi-public-init-gd
+registry:docker-registry
+backup:backup-psql
+backup:backup-vm
